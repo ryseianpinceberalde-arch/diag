@@ -9,9 +9,7 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depend
 @router.get("/summary")
 def dashboard_summary(client: Client = Depends(admin_client)) -> dict:
     computers = client.table("computers").select("id,status,last_seen").execute().data or []
-    latest_readings = client.table("diagnostic_readings").select(
-        "computer_id,cpu_temperature,disk_temperature,fan_speed_rpm,fan_speed_percent,recorded_at"
-    ).order("recorded_at", desc=True).limit(500).execute().data or []
+    latest_readings = client.table("diagnostic_readings").select("*").order("recorded_at", desc=True).limit(500).execute().data or []
     alerts = client.table("alerts").select("id", count="exact").in_("status", ["active", "acknowledged"]).execute()
     predictions = client.table("predictions").select("computer_id,risk_score,risk_level").order("created_at", desc=True).limit(200).execute().data or []
     latest_predictions = {}
