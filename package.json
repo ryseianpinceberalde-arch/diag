@@ -1,0 +1,9 @@
+{
+  "name": "pc-sentinel-cloudflare-build",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "npm install --prefix frontend && npm run build --prefix frontend && node scripts/copy_frontend_dist.mjs"
+  }
+}
