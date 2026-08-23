@@ -92,6 +92,7 @@ def computer_metadata() -> dict[str, Any]:
 
 
 def safe_temperature(label: str) -> float | None:
+    label = label.lower()
     library_value = libre_hardware_monitor_library_temperature(label)
     if library_value is not None:
         return library_value
@@ -100,15 +101,18 @@ def safe_temperature(label: str) -> float | None:
         return hardware_monitor_value
     try:
         sensors = psutil.sensors_temperatures(fahrenheit=False)
+        candidates = []
         for name, entries in sensors.items():
-            if label.lower() in name.lower() and entries:
-                return entries[0].current
-        for entries in sensors.values():
-            if entries:
-                return entries[0].current
+            for entry in entries:
+                text = f"{name} {getattr(entry, 'label', '')}".lower()
+                if label in text and entry.current is not None:
+                    candidates.append((text, float(entry.current)))
+        selected = select_temperature_value(label, candidates)
+        if selected is not None:
+            return selected
     except Exception:
         pass
-    if label.lower() == "cpu":
+    if label == "cpu":
         return wmi_thermal_zone_temperature()
     return None
 
@@ -132,7 +136,7 @@ def safe_fan_speed_percent() -> float | None:
 
 def hardware_monitor_temperature(label: str) -> float | None:
     if label.lower() == "cpu":
-        return hardware_monitor_sensor_value("Temperature", ["cpu", "core", "package"], [])
+        return hardware_monitor_sensor_value("Temperature", ["cpu", "core", "package", "tctl", "tdie"], [])
     if label.lower() == "disk":
         return hardware_monitor_sensor_value("Temperature", ["hdd", "ssd", "nvme", "drive", "disk"], [])
     return None
@@ -157,6 +161,7 @@ def hardware_monitor_sensor_value(
             except Exception:
                 continue
             values = []
+            named_values = []
             for sensor in sensors:
                 actual_type = str(getattr(sensor, "SensorType", "") or "").lower()
                 text = " ".join(
@@ -173,7 +178,12 @@ def hardware_monitor_sensor_value(
                         continue
                     if not require_all_keywords and not any(keyword in text for keyword in normalized_keywords):
                         continue
-                values.append(float(value))
+                sensor_value = float(value)
+                values.append(sensor_value)
+                named_values.append((text, sensor_value))
+            selected = select_temperature_value(normalized_keywords[0] if normalized_type == "temperature" and normalized_keywords else "", named_values)
+            if selected is not None:
+                return selected
             if values:
                 return round(sum(values) / len(values), 2)
     except Exception as exc:
@@ -183,7 +193,7 @@ def hardware_monitor_sensor_value(
 
 def libre_hardware_monitor_library_temperature(label: str) -> float | None:
     if label.lower() == "cpu":
-        return libre_hardware_monitor_library_sensor_value("Temperature", ["cpu", "core", "package"], [])
+        return libre_hardware_monitor_library_sensor_value("Temperature", ["cpu", "core", "package", "tctl", "tdie"], [])
     if label.lower() == "disk":
         return libre_hardware_monitor_library_sensor_value("Temperature", ["hdd", "ssd", "nvme", "drive", "disk"], [])
     return None
@@ -220,6 +230,7 @@ $keywords = {keywords_ps}
 $excludes = {excludes_ps}
 $requireAll = {require_all}
 $script:values = @()
+$script:namedValues = @()
 function Read-Hardware($hardware) {{
   $hardware.Update()
   foreach ($subHardware in $hardware.SubHardware) {{ Read-Hardware $subHardware }}
@@ -239,11 +250,20 @@ function Read-Hardware($hardware) {{
         if (-not $requireAll -and $text.Contains($keyword)) {{ $matched = $true }}
       }}
     }}
-    if ($matched) {{ $script:values += [double]$sensor.Value }}
+    if ($matched) {{
+      $script:values += [double]$sensor.Value
+      $script:namedValues += [pscustomobject]@{{ Text = $text; Value = [double]$sensor.Value }}
+    }}
   }}
 }}
 foreach ($hardware in $computer.Hardware) {{ Read-Hardware $hardware }}
 $computer.Close()
+if ('{normalized_type}' -eq 'Temperature' -and $script:namedValues.Count -gt 0) {{
+  $preferred = $script:namedValues | Where-Object {{ $_.Text -match 'package|tctl|tdie|cpu die|ccd' }} | Sort-Object Value -Descending | Select-Object -First 1
+  if ($preferred) {{ [Math]::Round($preferred.Value, 2); exit }}
+  [Math]::Round(($script:namedValues | Measure-Object -Property Value -Maximum).Maximum, 2)
+  exit
+}}
 if ($script:values.Count -gt 0) {{ [Math]::Round(($script:values | Measure-Object -Average).Average, 2) }}
 """
     try:
@@ -260,6 +280,24 @@ if ($script:values.Count -gt 0) {{ [Math]::Round(($script:values | Measure-Objec
     except Exception as exc:
         logger.debug("LibreHardwareMonitor library lookup failed: %s", exc)
     return None
+
+
+def select_temperature_value(label: str, values: list[tuple[str, float]]) -> float | None:
+    if not values:
+        return None
+    sane_values = [(text, value) for text, value in values if 0 < value < 125]
+    if not sane_values:
+        return None
+    if label == "cpu":
+        preferred = [
+            (text, value)
+            for text, value in sane_values
+            if any(keyword in text for keyword in ("package", "tctl", "tdie", "cpu die", "ccd"))
+        ]
+        if preferred:
+            return round(max(value for _, value in preferred), 2)
+        return round(max(value for _, value in sane_values), 2)
+    return round(sum(value for _, value in sane_values) / len(sane_values), 2)
 
 
 def nvidia_smi_fan_speed_percent() -> float | None:
