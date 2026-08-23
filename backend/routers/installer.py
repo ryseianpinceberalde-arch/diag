@@ -145,13 +145,27 @@ COLLECTION_INTERVAL_SECONDS=60
 $taskName = "PC Sentinel Agent"
 $agentPath = Join-Path $InstallDir "agent.py"
 Write-Step "Creating startup task"
-$action = New-ScheduledTaskAction -Execute $python.Source -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "PC Sentinel monitoring agent" -Force | Out-Null
+try {{
+  $action = New-ScheduledTaskAction -Execute $python.Source -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
+  $trigger = New-ScheduledTaskTrigger -AtLogOn
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "PC Sentinel monitoring agent" -Force | Out-Null
 
-Write-Step "Starting agent"
-Start-ScheduledTask -TaskName $taskName
+  Write-Step "Starting agent"
+  Start-ScheduledTask -TaskName $taskName
+}} catch {{
+  Write-Step "Startup task was blocked by Windows permissions; creating user startup launcher instead"
+  $startupDir = [Environment]::GetFolderPath("Startup")
+  $cmdPath = Join-Path $startupDir "pc-sentinel-agent.cmd"
+  @"
+@echo off
+cd /d "$InstallDir"
+start "" /min "$($python.Source)" "$agentPath"
+"@ | Set-Content -Encoding ASCII -Path $cmdPath
+
+  Write-Step "Starting agent without scheduled task"
+  Start-Process -FilePath $python.Source -ArgumentList "`"$agentPath`"" -WorkingDirectory $InstallDir -WindowStyle Hidden
+}}
 Write-Step "Installed. This computer should appear in PC Sentinel after the first check-in."
 """
     return Response(
