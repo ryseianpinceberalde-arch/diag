@@ -49,7 +49,7 @@ def is_local_api_url(value: str) -> bool:
 API_BASE_URL = normalize_url(ARGS.api_base_url or os.getenv("API_BASE_URL") or DEFAULT_API_BASE_URL)
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 INTERVAL = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "60"))
-AGENT_VERSION = "0.1.1"
+AGENT_VERSION = "0.1.2"
 QUEUE_PATH = Path(os.getenv("AGENT_QUEUE_PATH", str(AGENT_DIR / "agent_queue.sqlite3")))
 DEVICE_ID_PATH = Path(os.getenv("AGENT_DEVICE_ID_PATH", str(AGENT_DIR / "device-id.txt")))
 LHM_DLL_PATH = Path(os.getenv("LIBRE_HARDWARE_MONITOR_DLL", "..\\tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"))
@@ -584,8 +584,12 @@ def check_in_once() -> int:
 
     metadata = computer_metadata()
     if post("agents/register", metadata):
-        print(f"Registered {metadata['computer_name']} with PC Sentinel.")
-        return 0
+        reading = collect_reading(metadata["device_id"])
+        if post("readings", reading):
+            print(f"Registered {metadata['computer_name']} with PC Sentinel and uploaded first diagnostics reading.")
+            return 0
+        print(f"Registered {metadata['computer_name']}, but could not upload diagnostics data. Check agent.log for details.")
+        return 1
 
     print(f"Could not register with {API_BASE_URL}. Check agent.log for details.")
     return 1
