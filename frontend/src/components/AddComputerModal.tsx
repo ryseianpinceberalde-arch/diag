@@ -1,18 +1,35 @@
-import { Clipboard, PlusCircle, X } from "lucide-react";
+import { Clipboard, PlusCircle, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
+
+function plainPowerShellCommand(command: string) {
+  return command.replace(/\[(https?:\/\/[^\]]+)\]\(https?:\/\/[^\)]+\)/g, "$1");
+}
 
 export function AddComputerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [copied, setCopied] = useState<string | null>(null);
   const [onlineInstallCommand, setOnlineInstallCommand] = useState("");
   const [installError, setInstallError] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [loadingCommand, setLoadingCommand] = useState(false);
+  const installCommand = plainPowerShellCommand(onlineInstallCommand);
+
+  function loadCommand() {
+    setLoadingCommand(true);
+    setInstallError("");
+    setOnlineInstallCommand("");
+    apiFetch<{ command: string; expires_hours: number; expires_at?: string }>("/installer/command")
+      .then((data) => {
+        setOnlineInstallCommand(data.command);
+        setExpiresAt(data.expires_at ?? "");
+      })
+      .catch((err) => setInstallError(err instanceof Error ? err.message : "Failed to create install command"))
+      .finally(() => setLoadingCommand(false));
+  }
 
   useEffect(() => {
     if (!open) return;
-    setInstallError("");
-    apiFetch<{ command: string; expires_hours: number }>("/installer/command")
-      .then((data) => setOnlineInstallCommand(data.command))
-      .catch((err) => setInstallError(err instanceof Error ? err.message : "Failed to create install command"));
+    loadCommand();
   }, [open]);
 
   if (!open) return null;
@@ -40,12 +57,20 @@ export function AddComputerModal({ open, onClose }: { open: boolean; onClose: ()
         <div className="setup-steps">
           <article>
             <strong>Add this computer</strong>
-            <p>Open PowerShell on the Windows PC you want to monitor and run this command.</p>
-            <div className="code-row">
-              <pre>{installError || onlineInstallCommand || "Creating install command..."}</pre>
-              <button onClick={() => copy(onlineInstallCommand, "install command")} disabled={!onlineInstallCommand} aria-label="Copy install command"><Clipboard size={15} /></button>
-            </div>
-            <p className="helper-text">This works for this computer or another Windows PC. It installs Python if needed, downloads the agent, verifies check-in, and starts monitoring.</p>
+            <p>Open Windows PowerShell, click copy, paste the command, press Enter, and wait for installation to finish.</p>
+            {expiresAt ? <p className="helper-text">Installer expires at {new Date(expiresAt).toLocaleString()}.</p> : null}
+            <button onClick={() => copy(installCommand, "PowerShell command")} disabled={!installCommand || !!installError}>
+              <Clipboard size={15} /> Copy Command
+            </button>
+            <button className="secondary" onClick={loadCommand} disabled={loadingCommand}>
+              <RefreshCw size={15} /> {loadingCommand ? "Generating" : "Generate New Command"}
+            </button>
+            {installError ? <p className="error">{installError}</p> : null}
+            <details className="command-details">
+              <summary>Show command</summary>
+              <pre>{installError || installCommand || "Creating install command..."}</pre>
+            </details>
+            <p className="helper-text">Use the copy button instead of selecting the whole dialog. The command installs Python if needed, downloads the agent, verifies check-in, and starts monitoring.</p>
           </article>
 
           <article>

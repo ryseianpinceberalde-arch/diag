@@ -20,8 +20,8 @@ export function ComputersPage() {
   const [searchParams] = useSearchParams();
   const search = (searchParams.get("search") ?? "").toLowerCase();
 
-  async function load() {
-    setLoading(true);
+  async function load(showLoading = true) {
+    if (showLoading) setLoading(true);
     setError("");
     try {
       const data = await apiFetch<{ items: Computer[] }>("/computers");
@@ -35,6 +35,8 @@ export function ComputersPage() {
 
   useEffect(() => {
     load();
+    const timer = window.setInterval(() => load(false), 10000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const filteredComputers = computers.filter((computer) => {
@@ -74,7 +76,7 @@ export function ComputersPage() {
           <p>Registered computers appear after a monitoring agent checks in.</p>
         </div>
         <div className="header-actions">
-          <button className="secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
+          <button className="secondary" onClick={() => load()}><RefreshCw size={16} /> Refresh</button>
           <button className="secondary" onClick={exportInventory} disabled={filteredComputers.length === 0}><Download size={16} /> Export CSV</button>
           <button onClick={() => setAddOpen(true)}><PlusCircle size={16} /> Add Computer</button>
         </div>

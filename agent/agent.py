@@ -33,6 +33,7 @@ AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 INTERVAL = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "60"))
 AGENT_VERSION = "0.1.0"
 QUEUE_PATH = Path(os.getenv("AGENT_QUEUE_PATH", str(AGENT_DIR / "agent_queue.sqlite3")))
+DEVICE_ID_PATH = Path(os.getenv("AGENT_DEVICE_ID_PATH", str(AGENT_DIR / "device-id.txt")))
 LHM_DLL_PATH = Path(os.getenv("LIBRE_HARDWARE_MONITOR_DLL", "..\\tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"))
 
 logging.basicConfig(
@@ -49,6 +50,18 @@ def utc_now() -> str:
 
 
 def stable_device_id() -> str:
+    try:
+        if DEVICE_ID_PATH.exists():
+            existing = DEVICE_ID_PATH.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        DEVICE_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        generated = str(uuid.uuid4())
+        DEVICE_ID_PATH.write_text(generated, encoding="utf-8")
+        return generated
+    except Exception as exc:
+        logger.warning("Persistent device id failed, using hardware fallback: %s", exc)
+
     parts = [platform.node(), str(uuid.getnode())]
     if wmi:
         try:

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = Field(alias="SUPABASE_SERVICE_ROLE_KEY")
     agent_api_key: str = Field(alias="AGENT_API_KEY")
     cors_origins: Annotated[list[str], NoDecode] = Field(default=["http://localhost:5173"], alias="CORS_ORIGINS")
+    installer_api_base_url: str | None = Field(default=None, alias="INSTALLER_API_BASE_URL")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 from jose import JWTError, jwt
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/installer", tags=["installer"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_ROOT = PROJECT_ROOT / "agent"
 AGENT_FILES = ("agent.py", "requirements.txt", "start_with_temperature.ps1")
-AGENT_PACKAGE_VERSION = "2026-08-24-env-override"
+AGENT_PACKAGE_VERSION = "2026-08-24-install-flow-v2"
 INSTALL_TOKEN_ALGORITHM = "HS256"
 INSTALL_TOKEN_EXPIRY_HOURS = 24
 
@@ -48,6 +49,10 @@ def powershell_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def installer_base_url(request: Request, settings: Settings) -> str:
+    return (settings.installer_api_base_url or str(request.base_url)).rstrip("/")
+
+
 @router.get("/agent.zip")
 def agent_package() -> StreamingResponse:
     buffer = BytesIO()
@@ -70,16 +75,47 @@ def agent_package() -> StreamingResponse:
 
 @router.get("/command", dependencies=[Depends(require_admin)])
 def install_command(request: Request, settings: Settings = Depends(get_settings)) -> dict:
-    api_base_url = str(request.base_url).rstrip("/")
+    request_base_url = str(request.base_url).rstrip("/")
+    api_base_url = installer_base_url(request, settings)
+    if settings.installer_api_base_url and api_base_url != request_base_url:
+        try:
+            response = httpx.get(
+                f"{api_base_url}/api/installer/command",
+                headers={"Authorization": request.headers.get("authorization", "")},
+                timeout=20,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", "Remote installer command failed")
+            except ValueError:
+                detail = "Remote installer command failed"
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Could not reach online installer service") from exc
+
     token = create_install_token(settings)
     install_url = f"{api_base_url}/api/installer/install.ps1?token={token}"
-    command = (
-        'powershell -NoProfile -ExecutionPolicy Bypass -Command '
-        f'"Invoke-WebRequest -UseBasicParsing {powershell_literal(install_url)} '
-        r'-OutFile $env:TEMP\pc-sentinel-install.ps1; '
-        f'powershell -ExecutionPolicy Bypass -File $env:TEMP\\pc-sentinel-install.ps1 -ApiBaseUrl {powershell_literal(api_base_url)}"'
+    inner_command = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$installer = Join-Path $env:TEMP 'pc-sentinel-install.ps1'; "
+        "Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue; "
+        "Write-Host '[PC Sentinel] Downloading installer...'; "
+        f"Invoke-WebRequest -UseBasicParsing {powershell_literal(install_url)} -OutFile $installer; "
+        "if (!(Test-Path $installer)) { throw '[PC Sentinel] Installer was not downloaded.' }; "
+        "if ((Get-Item $installer).Length -eq 0) { throw '[PC Sentinel] Installer file is empty.' }; "
+        "$head = Get-Content -LiteralPath $installer -TotalCount 1 -ErrorAction Stop; "
+        "if ($head -match '^\\s*<!DOCTYPE html|^\\s*<html|^\\s*\\{') { throw '[PC Sentinel] Downloaded installer is not a PowerShell script.' }; "
+        f"& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -ApiBaseUrl {powershell_literal(api_base_url)}"
     )
-    return {"command": command, "expires_hours": INSTALL_TOKEN_EXPIRY_HOURS}
+    command = inner_command
+    return {
+        "command": command,
+        "expires_hours": INSTALL_TOKEN_EXPIRY_HOURS,
+        "install_url": install_url,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=INSTALL_TOKEN_EXPIRY_HOURS)).isoformat(),
+    }
 
 
 @router.get("/install.ps1")
@@ -88,7 +124,7 @@ def install_script(
     token: str | None = Query(default=None),
     settings: Settings = Depends(get_settings),
 ) -> Response:
-    api_base_url = str(request.base_url).rstrip("/")
+    api_base_url = installer_base_url(request, settings)
     package_url = f"{api_base_url}/api/installer/agent.zip"
     agent_api_key_default = ""
     if token:
@@ -105,6 +141,36 @@ $ErrorActionPreference = "Stop"
 
 function Write-Step([string]$Message) {{
   Write-Host "[PC Sentinel] $Message"
+}}
+
+function Invoke-WithRetry([scriptblock]$Action, [string]$Description) {{
+  for ($attempt = 1; $attempt -le 3; $attempt++) {{
+    try {{
+      if ($attempt -gt 1) {{
+        Write-Step "$Description retry $attempt/3"
+        Start-Sleep -Seconds (3 * $attempt)
+      }}
+      return & $Action
+    }} catch {{
+      if ($attempt -eq 3) {{
+        throw
+      }}
+      Write-Step "$Description failed. Server may be waking up."
+    }}
+  }}
+}}
+
+function Assert-DownloadedFile([string]$Path, [string]$Kind) {{
+  if (!(Test-Path $Path)) {{
+    throw "$Kind was not downloaded."
+  }}
+  if ((Get-Item $Path).Length -eq 0) {{
+    throw "$Kind file is empty."
+  }}
+  $firstLine = Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction SilentlyContinue
+  if ($firstLine -match "^\\s*<!DOCTYPE html|^\\s*<html|^\\s*\\{{") {{
+    throw "$Kind download returned an error page instead of the expected file."
+  }}
 }}
 
 function Normalize-Url([string]$Value) {{
@@ -193,6 +259,13 @@ if (-not $AgentApiKey) {{
 $ApiBaseUrl = Normalize-Url $ApiBaseUrl
 $PackageUrl = Normalize-Url $PackageUrl
 
+Write-Host "========================================="
+Write-Host "           PC SENTINEL INSTALLER"
+Write-Host "========================================="
+Write-Step "[1/7] Connecting to PC Sentinel server"
+Invoke-WithRetry {{ Invoke-WebRequest -UseBasicParsing -Uri "$ApiBaseUrl/api/health" -TimeoutSec 20 | Out-Null }} "Health check"
+
+Write-Step "[2/7] Checking Python runtime"
 $python = Resolve-Python
 if (-not $python) {{
   $winget = Get-Command winget -ErrorAction SilentlyContinue
@@ -217,13 +290,14 @@ Write-Step "Creating install folder"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 $zipPath = Join-Path $env:TEMP "pc-sentinel-agent.zip"
-Write-Step "Downloading agent package"
-Invoke-WebRequest -UseBasicParsing -Uri $PackageUrl -OutFile $zipPath
+Write-Step "[3/7] Downloading agent package"
+Invoke-WithRetry {{ Invoke-WebRequest -UseBasicParsing -Uri $PackageUrl -OutFile $zipPath -TimeoutSec 60 }} "Agent download"
+Assert-DownloadedFile $zipPath "Agent package"
 
-Write-Step "Extracting agent"
+Write-Step "[4/7] Extracting agent"
 Expand-Archive -Force -Path $zipPath -DestinationPath $InstallDir
 
-Write-Step "Installing Python packages"
+Write-Step "[5/7] Installing Python packages"
 & $python -m pip install --upgrade pip
 & $python -m pip install -r (Join-Path $InstallDir "requirements.txt")
 
@@ -237,7 +311,7 @@ COLLECTION_INTERVAL_SECONDS=60
 $taskName = "PC Sentinel Agent"
 $agentPath = Join-Path $InstallDir "agent.py"
 
-Write-Step "Verifying agent check-in"
+Write-Step "[6/7] Registering computer"
 Push-Location $InstallDir
 try {{
   & $python $agentPath --once
@@ -249,7 +323,7 @@ if ($checkInExitCode -ne 0) {{
   throw "Agent could not check in. Open $InstallDir\\agent.log on this computer for details."
 }}
 
-Write-Step "Creating startup task"
+Write-Step "[7/7] Installing startup task"
 try {{
   $action = New-ScheduledTaskAction -Execute $python -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
   $trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -271,7 +345,7 @@ start "" /min "$python" "$agentPath"
   Write-Step "Starting agent without scheduled task"
   Start-Process -FilePath $python -ArgumentList "`"$agentPath`"" -WorkingDirectory $InstallDir -WindowStyle Hidden
 }}
-Write-Step "Installed. This computer should appear in PC Sentinel after the first check-in."
+Write-Step "PC Sentinel installed successfully. This computer should appear online after the first diagnostics check-in."
 """
     return Response(
         content=script,
