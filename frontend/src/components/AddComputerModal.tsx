@@ -2,9 +2,6 @@ import { Clipboard, PlusCircle, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 
-const localAgentCommand = `cd C:\\Users\\Ryse\\Downloads\\dia\\agent
-python .\\agent.py`;
-
 export function AddComputerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [copied, setCopied] = useState<string | null>(null);
   const [onlineInstallCommand, setOnlineInstallCommand] = useState("");
@@ -43,21 +40,18 @@ export function AddComputerModal({ open, onClose }: { open: boolean; onClose: ()
         <div className="setup-steps">
           <article>
             <strong>Add this computer</strong>
-            <p>Use this if you want to monitor this same Windows machine.</p>
+            <p>Open PowerShell on the Windows PC you want to monitor and run this command.</p>
             <div className="code-row">
-              <pre>{localAgentCommand}</pre>
-              <button onClick={() => copy(localAgentCommand, "local command")} aria-label="Copy local agent command"><Clipboard size={15} /></button>
+              <pre>{installError || onlineInstallCommand || "Creating install command..."}</pre>
+              <button onClick={() => copy(onlineInstallCommand, "install command")} disabled={!onlineInstallCommand} aria-label="Copy install command"><Clipboard size={15} /></button>
             </div>
+            <p className="helper-text">This works for this computer or another Windows PC. It installs Python if needed, downloads the agent, verifies check-in, and starts monitoring.</p>
           </article>
 
           <article>
             <strong>Install on another computer</strong>
-            <p>Open PowerShell on the other Windows PC and run this command. The other computer does not need a dashboard login.</p>
-            <div className="code-row">
-              <pre>{installError || onlineInstallCommand || "Creating install command..."}</pre>
-              <button onClick={() => copy(onlineInstallCommand, "online install command")} disabled={!onlineInstallCommand} aria-label="Copy online install command"><Clipboard size={15} /></button>
-            </div>
-            <p className="helper-text">This command is generated for a logged-in dashboard admin, then the other PC only installs the agent. It downloads the agent, writes `.env`, creates a Windows startup task, and starts monitoring.</p>
+            <p>Copy the same command above and send it to the other Windows PC. The other computer does not need a dashboard login.</p>
+            <p className="helper-text">Use a freshly generated command from this dialog because the installer token expires after 24 hours.</p>
           </article>
 
           <article>
