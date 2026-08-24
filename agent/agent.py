@@ -9,6 +9,7 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -494,6 +495,7 @@ def post(endpoint: str, payload: dict[str, Any]) -> bool:
             timeout=10,
         )
         if response.status_code >= 500:
+            logger.warning("Post to %s failed with %s: %s", endpoint, response.status_code, response.text[:500])
             return False
         response.raise_for_status()
         return True
@@ -505,6 +507,21 @@ def post(endpoint: str, payload: dict[str, Any]) -> bool:
 def request_stop(*_: Any) -> None:
     global stop_requested
     stop_requested = True
+
+
+def check_in_once() -> int:
+    if not AGENT_API_KEY:
+        logger.error("AGENT_API_KEY is required")
+        print("AGENT_API_KEY is required")
+        return 1
+
+    metadata = computer_metadata()
+    if post("agents/register", metadata):
+        print(f"Registered {metadata['computer_name']} with PC Sentinel.")
+        return 0
+
+    print(f"Could not register with {API_BASE_URL}. Check agent.log for details.")
+    return 1
 
 
 def main() -> None:
@@ -532,4 +549,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--once" in sys.argv:
+        raise SystemExit(check_in_once())
     main()
