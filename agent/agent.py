@@ -49,10 +49,11 @@ def is_local_api_url(value: str) -> bool:
 API_BASE_URL = normalize_url(ARGS.api_base_url or os.getenv("API_BASE_URL") or DEFAULT_API_BASE_URL)
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 INTERVAL = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "60"))
-AGENT_VERSION = "0.1.2"
+AGENT_VERSION = "0.2.0"
 QUEUE_PATH = Path(os.getenv("AGENT_QUEUE_PATH", str(AGENT_DIR / "agent_queue.sqlite3")))
 DEVICE_ID_PATH = Path(os.getenv("AGENT_DEVICE_ID_PATH", str(AGENT_DIR / "device-id.txt")))
 LHM_DLL_PATH = Path(os.getenv("LIBRE_HARDWARE_MONITOR_DLL", "..\\tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"))
+ALLOW_ACPI_TEMPERATURE_FALLBACK = os.getenv("ALLOW_ACPI_TEMPERATURE_FALLBACK", "false").lower() == "true"
 
 logging.basicConfig(
     filename=str(AGENT_DIR / "agent.log"),
@@ -174,7 +175,7 @@ def safe_temperature(label: str) -> float | None:
             return selected
     except Exception:
         pass
-    if label == "cpu":
+    if label == "cpu" and ALLOW_ACPI_TEMPERATURE_FALLBACK:
         return wmi_thermal_zone_temperature()
     return None
 
@@ -198,7 +199,7 @@ def safe_fan_speed_percent() -> float | None:
 
 def hardware_monitor_temperature(label: str) -> float | None:
     if label.lower() == "cpu":
-        return hardware_monitor_sensor_value("Temperature", ["cpu", "core", "package", "tctl", "tdie"], [])
+        return hardware_monitor_sensor_value("Temperature", ["cpu", "core", "package", "tctl", "tdie"], ["distance", "tjmax"])
     if label.lower() == "disk":
         return hardware_monitor_sensor_value("Temperature", ["hdd", "ssd", "nvme", "drive", "disk"], [])
     return None
@@ -255,7 +256,7 @@ def hardware_monitor_sensor_value(
 
 def libre_hardware_monitor_library_temperature(label: str) -> float | None:
     if label.lower() == "cpu":
-        return libre_hardware_monitor_library_sensor_value("Temperature", ["cpu", "core", "package", "tctl", "tdie"], [])
+        return libre_hardware_monitor_library_sensor_value("Temperature", ["cpu", "core", "package", "tctl", "tdie"], ["distance", "tjmax"])
     if label.lower() == "disk":
         return libre_hardware_monitor_library_sensor_value("Temperature", ["hdd", "ssd", "nvme", "drive", "disk"], [])
     return None
@@ -566,6 +567,127 @@ def post(endpoint: str, payload: dict[str, Any]) -> bool:
         return False
 
 
+def agent_headers() -> dict[str, str]:
+    return {"X-Agent-Api-Key": AGENT_API_KEY}
+
+
+def run_limited_command(args: list[str], timeout: int = 20) -> dict[str, Any]:
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
+    return {
+        "exit_code": result.returncode,
+        "stdout": result.stdout[-12000:],
+        "stderr": result.stderr[-4000:],
+    }
+
+
+def powershell_json(command: str, timeout: int = 20) -> dict[str, Any]:
+    return run_limited_command(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], timeout)
+
+
+def schedule_self_uninstall() -> dict[str, Any]:
+    if os.name != "nt":
+        return {"message": "Uninstall is only supported on Windows agents."}
+    task_name = "PC Sentinel Agent"
+    startup_dir = Path(os.getenv("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    launcher = startup_dir / "pc-sentinel-agent.cmd"
+    cleanup = AGENT_DIR / "pc-sentinel-uninstall.cmd"
+    script = f"""@echo off
+timeout /t 5 /nobreak >nul
+schtasks /Delete /TN "{task_name}" /F >nul 2>nul
+del "{launcher}" >nul 2>nul
+rmdir /s /q "{AGENT_DIR}" >nul 2>nul
+"""
+    cleanup.write_text(script, encoding="ascii")
+    subprocess.Popen(["cmd", "/c", "start", "", "/min", str(cleanup)], cwd=str(AGENT_DIR), shell=False)
+    return {"message": "Agent uninstall scheduled."}
+
+
+def execute_agent_command(action: str) -> dict[str, Any]:
+    if action == "system_info":
+        return {
+            "computer": computer_metadata(),
+            "boot_time": datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat(),
+            "cpu_count": psutil.cpu_count(),
+            "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
+        }
+    if action == "process_list":
+        processes = []
+        for proc in psutil.process_iter(["pid", "name", "username", "cpu_percent", "memory_percent"]):
+            try:
+                processes.append(proc.info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return {"processes": sorted(processes, key=lambda item: item.get("memory_percent") or 0, reverse=True)[:40]}
+    if action == "services_list":
+        if os.name != "nt":
+            return {"services": []}
+        return powershell_json("Get-Service | Select-Object -First 80 Name,DisplayName,Status | ConvertTo-Json -Depth 3")
+    if action == "disk_summary":
+        disks = []
+        for part in psutil.disk_partitions(all=False):
+            try:
+                usage = psutil.disk_usage(part.mountpoint)
+            except OSError:
+                continue
+            disks.append({"device": part.device, "mountpoint": part.mountpoint, "fstype": part.fstype, "percent": usage.percent, "free_gb": round(usage.free / (1024**3), 2)})
+        return {"disks": disks}
+    if action == "network_test":
+        latency, loss = ping_stats()
+        return {"target": "8.8.8.8", "latency_ms": latency, "packet_loss_percent": loss}
+    if action == "restart":
+        if os.name == "nt":
+            subprocess.Popen(["shutdown", "/r", "/t", "60", "/c", "PC Sentinel administrator requested restart"], shell=False)
+            return {"message": "Restart scheduled in 60 seconds."}
+        return {"message": "Restart is only supported on Windows agents."}
+    if action == "shutdown":
+        if os.name == "nt":
+            subprocess.Popen(["shutdown", "/s", "/t", "60", "/c", "PC Sentinel administrator requested shutdown"], shell=False)
+            return {"message": "Shutdown scheduled in 60 seconds."}
+        return {"message": "Shutdown is only supported on Windows agents."}
+    if action == "uninstall_agent":
+        return schedule_self_uninstall()
+    raise ValueError(f"Unsupported command action: {action}")
+
+
+def poll_agent_commands(device_id: str) -> None:
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/api/agents/commands/pending",
+            headers=agent_headers(),
+            params={"device_id": device_id},
+            timeout=10,
+        )
+        if response.status_code == 404:
+            return
+        response.raise_for_status()
+        commands = response.json().get("items", [])
+    except Exception as exc:
+        logger.debug("Command polling failed: %s", exc)
+        return
+
+    for command in commands:
+        command_id = command.get("id")
+        action = command.get("action")
+        status = "completed"
+        result: dict[str, Any] | None = None
+        error: str | None = None
+        try:
+            result = execute_agent_command(action)
+        except Exception as exc:
+            status = "failed"
+            error = str(exc)
+            logger.warning("Command %s failed: %s", action, exc)
+        try:
+            requests.post(
+                f"{API_BASE_URL}/api/agents/commands/{command_id}/complete",
+                headers=agent_headers(),
+                json={"status": status, "result": result or {}, "error": error},
+                timeout=10,
+            ).raise_for_status()
+        except Exception as exc:
+            logger.warning("Command completion post failed for %s: %s", command_id, exc)
+
+
 def request_stop(*_: Any) -> None:
     global stop_requested
     stop_requested = True
@@ -606,6 +728,7 @@ def main() -> None:
     metadata = computer_metadata()
     backoff = 1
     while not stop_requested:
+        poll_agent_commands(metadata["device_id"])
         if not post("agents/register", metadata):
             queue.add("agents/register", metadata)
         reading = collect_reading(metadata["device_id"])

@@ -1,11 +1,34 @@
-from datetime import datetime
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from supabase import Client
-from dependencies import admin_client, require_admin
+from dependencies import admin_client, require_admin, require_role
 from services.prediction import analyze_computer
-from services.status import effective_status, health_from_prediction
+from services.health import evaluate_computer_health
+from services.settings import load_thresholds
 
 router = APIRouter(prefix="/computers", tags=["computers"], dependencies=[Depends(require_admin)])
+
+COMMAND_ACTIONS = {
+    "system_info",
+    "process_list",
+    "services_list",
+    "disk_summary",
+    "network_test",
+    "restart",
+    "shutdown",
+    "uninstall_agent",
+}
+
+
+class ComputerUpdate(BaseModel):
+    tags: list[str] | None = None
+    notes: str | None = None
+
+
+class CommandCreate(BaseModel):
+    action: str = Field(min_length=1, max_length=80)
 
 
 @router.get("")
@@ -14,33 +37,49 @@ def list_computers(
     offset: int = Query(default=0, ge=0),
     client: Client = Depends(admin_client),
 ) -> dict:
+    thresholds = load_thresholds(client)
     computers = client.table("computers").select("*", count="exact").order("last_seen", desc=True).range(offset, offset + limit - 1).execute()
     items = computers.data or []
     for item in items:
         latest = client.table("diagnostic_readings").select("*").eq("computer_id", item["id"]).order("recorded_at", desc=True).limit(1).execute().data
         prediction = client.table("predictions").select("*").eq("computer_id", item["id"]).order("created_at", desc=True).limit(1).execute().data
-        item["status"] = effective_status(item)
+        health = evaluate_computer_health(item, latest[0] if latest else None, thresholds)
+        item["status"] = health["status"]
         item["latest_reading"] = latest[0] if latest else None
         item["latest_prediction"] = prediction[0] if prediction else None
-        item["health_level"] = health_from_prediction(item["latest_prediction"], item["status"])
+        item["health_level"] = health["status"]
+        item["health_issues"] = health["issues"]
     return {"items": items, "total": computers.count or len(items), "limit": limit, "offset": offset}
 
 
 @router.get("/{computer_id}")
 def get_computer(computer_id: str, client: Client = Depends(admin_client)) -> dict:
+    thresholds = load_thresholds(client)
     computer = client.table("computers").select("*").eq("id", computer_id).single().execute().data
     latest = client.table("diagnostic_readings").select("*").eq("computer_id", computer_id).order("recorded_at", desc=True).limit(1).execute().data
     alerts = client.table("alerts").select("*").eq("computer_id", computer_id).order("created_at", desc=True).limit(50).execute().data or []
     prediction = client.table("predictions").select("*").eq("computer_id", computer_id).order("created_at", desc=True).limit(1).execute().data
-    computer["status"] = effective_status(computer)
+    health = evaluate_computer_health(computer, latest[0] if latest else None, thresholds)
+    computer["status"] = health["status"]
     latest_prediction = prediction[0] if prediction else None
-    computer["health_level"] = health_from_prediction(latest_prediction, computer["status"])
+    computer["health_level"] = health["status"]
+    computer["health_issues"] = health["issues"]
     return {
         "computer": computer,
         "latest_reading": latest[0] if latest else None,
         "alerts": alerts,
         "latest_prediction": latest_prediction,
     }
+
+
+@router.patch("/{computer_id}", dependencies=[Depends(require_role("administrator", "technician"))])
+def update_computer(computer_id: str, payload: ComputerUpdate, user: dict = Depends(require_role("administrator", "technician")), client: Client = Depends(admin_client)) -> dict:
+    row = payload.model_dump(exclude_none=True, mode="json")
+    if "tags" in row:
+        row["tags"] = [tag.strip() for tag in row["tags"] if tag.strip()][:12]
+    result = client.table("computers").update(row).eq("id", computer_id).execute().data
+    client.table("audit_logs").insert({"actor_id": user["id"], "action": "computer.update", "target_type": "computer", "target_id": computer_id, "metadata": row}).execute()
+    return {"computer": result[0] if result else None}
 
 
 @router.get("/{computer_id}/history")
@@ -70,3 +109,66 @@ def get_predictions(computer_id: str, client: Client = Depends(admin_client)) ->
 @router.post("/{computer_id}/analyze")
 def analyze(computer_id: str, client: Client = Depends(admin_client)) -> dict:
     return analyze_computer(client, computer_id, save=True)
+
+
+@router.get("/{computer_id}/commands")
+def list_commands(computer_id: str, limit: int = Query(default=25, ge=1, le=100), client: Client = Depends(admin_client)) -> dict:
+    rows = client.table("agent_commands").select("*").eq("computer_id", computer_id).order("requested_at", desc=True).limit(limit).execute().data or []
+    return {"items": rows}
+
+
+@router.post("/{computer_id}/commands", dependencies=[Depends(require_role("administrator"))])
+def create_command(computer_id: str, payload: CommandCreate, user: dict = Depends(require_role("administrator")), client: Client = Depends(admin_client)) -> dict:
+    if payload.action not in COMMAND_ACTIONS:
+        raise HTTPException(status_code=422, detail="Unsupported command action")
+    computer = client.table("computers").select("id,device_id").eq("id", computer_id).single().execute().data
+    if not computer:
+        raise HTTPException(status_code=404, detail="Computer not found")
+    row = {
+        "computer_id": computer_id,
+        "device_id": computer["device_id"],
+        "action": payload.action,
+        "status": "queued",
+        "requested_by": user["id"],
+    }
+    result = client.table("agent_commands").insert(row).execute().data
+    client.table("audit_logs").insert({"actor_id": user["id"], "action": f"agent_command.{payload.action}", "target_type": "computer", "target_id": computer_id}).execute()
+    return {"command": result[0] if result else row}
+
+
+@router.get("/{computer_id}/report")
+def computer_report(computer_id: str, client: Client = Depends(admin_client)) -> Response:
+    detail = get_computer(computer_id, client)
+    history = get_history(computer_id, limit=20, client=client)
+    computer = detail["computer"]
+    latest = detail["latest_reading"] or {}
+    html = f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PC Sentinel Report - {computer.get("computer_name")}</title></head>
+<body>
+<h1>PC Sentinel Health Report</h1>
+<p><strong>Computer:</strong> {computer.get("computer_name")}</p>
+<p><strong>Status:</strong> {computer.get("status")}</p>
+<p><strong>Generated:</strong> {datetime.now(timezone.utc).isoformat()}</p>
+<h2>Hardware</h2>
+<ul>
+<li>Device ID: {computer.get("device_id")}</li>
+<li>OS: {computer.get("operating_system") or "-"}</li>
+<li>IP: {computer.get("ip_address") or "-"}</li>
+<li>Tags: {", ".join(computer.get("tags") or []) or "-"}</li>
+</ul>
+<h2>Latest Measurements</h2>
+<ul>
+<li>CPU: {latest.get("cpu_usage", "-")}%</li>
+<li>RAM: {latest.get("ram_usage", "-")}%</li>
+<li>Disk: {latest.get("disk_usage", "-")}%</li>
+<li>CPU Temperature: {latest.get("cpu_temperature", "-")} C</li>
+</ul>
+<h2>Notes</h2>
+<p>{computer.get("notes") or ""}</p>
+<h2>Recent Readings</h2>
+<p>{len(history["readings"])} readings included in dashboard history.</p>
+</body>
+</html>"""
+    filename = f"pc-sentinel-{computer.get('computer_name', 'computer')}.html"
+    return Response(content=html, media_type="text/html", headers={"Content-Disposition": f'attachment; filename="{filename}"'})

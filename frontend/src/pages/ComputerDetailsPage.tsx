@@ -1,4 +1,4 @@
-import { Activity, RefreshCw } from "lucide-react";
+import { Activity, Download, Power, RefreshCw, Save, Terminal, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -8,8 +8,8 @@ import { StatusBadge } from "../components/StatusBadge";
 import { TemperatureBadge } from "../components/TemperatureBadge";
 import { UsageProgressBar } from "../components/UsageProgressBar";
 import { FanSpeedBadge } from "../components/FanSpeedBadge";
-import { apiFetch } from "../lib/api";
-import { Alert, Computer, DiagnosticReading, Prediction } from "../types/models";
+import { apiDownload, apiFetch } from "../lib/api";
+import { AgentCommand, Alert, Computer, DiagnosticReading, Prediction } from "../types/models";
 
 interface DetailResponse {
   computer: Computer;
@@ -23,20 +23,38 @@ export function ComputerDetailsPage() {
   const [detail, setDetail] = useState<DetailResponse | null>(null);
   const [history, setHistory] = useState<{ readings: DiagnosticReading[]; events: any[] }>({ readings: [], events: [] });
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [commands, setCommands] = useState<AgentCommand[]>([]);
+  const [tagsText, setTagsText] = useState("");
+  const [notes, setNotes] = useState("");
 
   const load = useCallback(async () => {
     if (!computerId) return;
-    const [detailData, historyData] = await Promise.all([
-      apiFetch<DetailResponse>(`/computers/${computerId}`),
-      apiFetch<{ readings: DiagnosticReading[]; events: any[] }>(`/computers/${computerId}/history`)
-    ]);
-    setDetail(detailData);
-    setHistory(historyData);
+    setLoading(true);
+    setError("");
+    try {
+      const [detailData, historyData] = await Promise.all([
+        apiFetch<DetailResponse>(`/computers/${computerId}`),
+        apiFetch<{ readings: DiagnosticReading[]; events: any[] }>(`/computers/${computerId}/history`)
+      ]);
+      setDetail(detailData);
+      setHistory(historyData);
+      setTagsText((detailData.computer.tags ?? []).join(", "));
+      setNotes(detailData.computer.notes ?? "");
+      const commandData = await apiFetch<{ items: AgentCommand[] }>(`/computers/${computerId}/commands`);
+      setCommands(commandData.items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load computer details");
+    } finally {
+      setLoading(false);
+    }
   }, [computerId]);
 
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    load();
+    const timer = window.setInterval(load, 10000);
+    return () => window.clearInterval(timer);
   }, [load]);
 
   async function analyze() {
@@ -52,8 +70,64 @@ export function ComputerDetailsPage() {
     }
   }
 
+  async function saveMetadata() {
+    if (!computerId) return;
+    setError("");
+    try {
+      await apiFetch(`/computers/${computerId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          tags: tagsText.split(",").map((tag) => tag.trim()).filter(Boolean),
+          notes
+        })
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save computer metadata");
+    }
+  }
+
+  async function queueCommand(action: AgentCommand["action"]) {
+    if (!computerId) return;
+    if (["restart", "shutdown", "uninstall_agent"].includes(action)) {
+      const confirmed = window.confirm(`Queue ${action.replace(/_/g, " ")} for ${detail?.computer.computer_name}?`);
+      if (!confirmed) return;
+    }
+    setError("");
+    try {
+      await apiFetch(`/computers/${computerId}/commands`, {
+        method: "POST",
+        body: JSON.stringify({ action })
+      });
+      const data = await apiFetch<{ items: AgentCommand[] }>(`/computers/${computerId}/commands`);
+      setCommands(data.items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to queue command");
+    }
+  }
+
+  async function downloadReport() {
+    if (!computerId || !detail) return;
+    try {
+      const blob = await apiDownload(`/computers/${computerId}/report`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `pc-sentinel-${detail.computer.computer_name}.html`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download report");
+    }
+  }
+
   if (!detail) {
-    return <div className="page">{error && <p className="error">{error}</p>}<LoadingBlock /></div>;
+    return (
+      <div className="page">
+        {error && <p className="error">{error}</p>}
+        {loading ? <LoadingBlock /> : <button onClick={load}><RefreshCw size={16} /> Retry</button>}
+      </div>
+    );
   }
 
   const chartData = history.readings.map((reading) => ({
@@ -74,7 +148,10 @@ export function ComputerDetailsPage() {
           <h1>{detail.computer.computer_name}</h1>
           <p>{detail.computer.operating_system ?? "Operating system unknown"}</p>
         </div>
-        <button onClick={analyze} disabled={analyzing}><RefreshCw size={16} /> {analyzing ? "Analyzing..." : "Analyze"}</button>
+        <div className="header-actions">
+          <button className="secondary" onClick={downloadReport}><Download size={16} /> Report</button>
+          <button onClick={analyze} disabled={analyzing}><RefreshCw size={16} /> {analyzing ? "Analyzing..." : "Analyze"}</button>
+        </div>
       </header>
       {error && <p className="error">{error}</p>}
       <div className="split">
@@ -88,6 +165,18 @@ export function ComputerDetailsPage() {
             <dt>Status</dt><dd><StatusBadge value={detail.computer.status} /></dd>
             <dt>Last seen</dt><dd>{detail.computer.last_seen ? new Date(detail.computer.last_seen).toLocaleString() : "-"}</dd>
           </dl>
+        </section>
+        <section className="panel">
+          <h2>Tags & Notes</h2>
+          <label>
+            Tags
+            <input value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="office, laptop, priority" />
+          </label>
+          <label>
+            Notes
+            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Maintenance notes for this computer" />
+          </label>
+          <button onClick={saveMetadata}><Save size={16} /> Save</button>
         </section>
         <section className="panel">
           <h2>Prediction</h2>
@@ -112,6 +201,32 @@ export function ComputerDetailsPage() {
           <TemperatureBadge label="Disk temperature" value={detail.latest_reading?.disk_temperature} />
           <FanSpeedBadge label="Fan speed" rpm={detail.latest_reading?.fan_speed_rpm} percent={detail.latest_reading?.fan_speed_percent} />
         </div>
+      </section>
+      <section className="panel">
+        <h2><Terminal size={18} /> Remote Actions</h2>
+        <div className="toolbar">
+          <button className="secondary" onClick={() => queueCommand("system_info")}>System Info</button>
+          <button className="secondary" onClick={() => queueCommand("process_list")}>Processes</button>
+          <button className="secondary" onClick={() => queueCommand("services_list")}>Services</button>
+          <button className="secondary" onClick={() => queueCommand("disk_summary")}>Disk Summary</button>
+          <button className="secondary" onClick={() => queueCommand("network_test")}>Network Test</button>
+          <button className="secondary" onClick={() => queueCommand("restart")}><Power size={16} /> Restart</button>
+          <button className="secondary" onClick={() => queueCommand("shutdown")}><Power size={16} /> Shutdown</button>
+          <button className="secondary" onClick={() => queueCommand("uninstall_agent")}><Trash2 size={16} /> Uninstall Agent</button>
+        </div>
+        {commands.length === 0 ? <p className="empty">No remote actions have been queued.</p> : (
+          <div className="command-list">
+            {commands.map((command) => (
+              <article className="list-item" key={command.id}>
+                <StatusBadge value={command.status} />
+                <strong>{command.action.replace(/_/g, " ")}</strong>
+                <span>{new Date(command.requested_at).toLocaleString()}</span>
+                {command.error ? <span className="error">{command.error}</span> : null}
+                {command.result ? <details><summary>Result</summary><pre>{JSON.stringify(command.result, null, 2)}</pre></details> : null}
+              </article>
+            ))}
+          </div>
+        )}
       </section>
       <section className="panel">
         <h2><Activity size={18} /> Measurement history</h2>

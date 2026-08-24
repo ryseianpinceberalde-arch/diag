@@ -17,3 +17,18 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   }
   return response.json() as Promise<T>;
 }
+
+export async function apiDownload(path: string): Promise<Blob> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const headers = new Headers();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const response = await fetch(`${API_URL}/api${path}`, { headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: "Request failed" }));
+    throw new Error(body.detail ?? "Request failed");
+  }
+  return response.blob();
+}

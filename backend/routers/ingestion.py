@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from supabase import Client
 from dependencies import admin_client, require_agent_api_key
 from schemas.models import DiagnosticReadingIn, SystemEventIn
-from services.alerts import upsert_prediction_alerts
+from services.alerts import upsert_health_alerts, upsert_prediction_alerts
 
 router = APIRouter(tags=["ingestion"], dependencies=[Depends(require_agent_api_key)])
 
@@ -22,8 +22,10 @@ def create_reading(payload: DiagnosticReadingIn, client: Client = Depends(admin_
     row["computer_id"] = computer_id
     row["recorded_at"] = row["recorded_at"] or datetime.now(timezone.utc).isoformat()
     inserted = client.table("diagnostic_readings").insert(row).execute().data
+    computer = client.table("computers").select("*").eq("id", computer_id).single().execute().data
+    health = upsert_health_alerts(client, computer, inserted[0] if inserted else row)
     prediction = upsert_prediction_alerts(client, computer_id)
-    return {"reading": inserted[0] if inserted else row, "prediction": prediction}
+    return {"reading": inserted[0] if inserted else row, "health": health, "prediction": prediction}
 
 
 @router.post("/events")

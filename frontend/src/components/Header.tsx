@@ -1,6 +1,7 @@
 import { Bell, Menu, Search, ShieldAlert, User } from "lucide-react";
-import { KeyboardEvent, useState } from "react";
+import { KeyboardEvent, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { apiFetch } from "../lib/api";
 
 const titles: Record<string, { title: string; subtitle: string }> = {
   "/": {
@@ -45,6 +46,7 @@ export function Header({ onSignOut, onOpenMenu }: { onSignOut: () => void; onOpe
   const location = useLocation();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
+  const [systemStatus, setSystemStatus] = useState<"healthy" | "warning" | "critical">("healthy");
   const page = location.pathname.startsWith("/computers/")
     ? { title: "Computer Diagnostic Details", subtitle: "Sensor telemetry, component timeline and analysis" }
     : titles[location.pathname] ?? titles["/"];
@@ -54,6 +56,22 @@ export function Header({ onSignOut, onOpenMenu }: { onSignOut: () => void; onOpe
       navigate(`/computers?search=${encodeURIComponent(query.trim())}`);
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch<{ system_status: "healthy" | "warning" | "critical" }>("/dashboard/summary")
+      .then((summary) => {
+        if (!cancelled) setSystemStatus(summary.system_status);
+      })
+      .catch(() => {
+        if (!cancelled) setSystemStatus("critical");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname]);
+
+  const statusText = systemStatus === "healthy" ? "All Systems Operational" : systemStatus === "warning" ? "Systems Need Attention" : "Critical or Offline Systems";
 
   return (
     <header className="topbar">
@@ -77,9 +95,9 @@ export function Header({ onSignOut, onOpenMenu }: { onSignOut: () => void; onOpe
             onKeyDown={search}
           />
         </label>
-        <div className="system-pill">
+        <div className={`system-pill ${systemStatus}`}>
           <span />
-          All Systems Operational
+          {statusText}
         </div>
         <button className="icon-button" onClick={() => navigate("/alerts")} title="Open alerts" aria-label="Open alerts">
           <Bell size={18} />

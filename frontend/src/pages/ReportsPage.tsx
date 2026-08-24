@@ -1,4 +1,4 @@
-import { Download, FileText } from "lucide-react";
+import { Download, FileText, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { RiskScoreIndicator } from "../components/RiskScoreIndicator";
 import { StatusBadge } from "../components/StatusBadge";
@@ -8,7 +8,7 @@ import { exportCsv } from "../lib/export";
 interface ReportItem {
   computer: { computer_name: string; device_id: string } | null;
   risk_level: string;
-  risk_score: number;
+  risk_score: number | null;
   component: string;
   recommendation: string;
   created_at: string;
@@ -17,9 +17,23 @@ interface ReportItem {
 export function ReportsPage() {
   const [items, setItems] = useState<ReportItem[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setError("");
+    setLoading(true);
+    try {
+      const data = await apiFetch<{ items: ReportItem[] }>("/reports/maintenance");
+      setItems(data.items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load report");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    apiFetch<{ items: ReportItem[] }>("/reports/maintenance").then((data) => setItems(data.items)).catch((err) => setError(err.message));
+    load();
   }, []);
 
   function exportReports() {
@@ -41,10 +55,13 @@ export function ReportsPage() {
           <h1>Auditing & System Reports</h1>
           <p>Generate, preview and export enterprise health and inventory documents.</p>
         </div>
-        <button className="secondary" onClick={exportReports} disabled={items.length === 0}><Download size={16} /> Export CSV</button>
+        <div className="header-actions">
+          <button className="secondary" onClick={load}><RefreshCw size={16} /> Retry</button>
+          <button className="secondary" onClick={exportReports} disabled={items.length === 0}><Download size={16} /> Export CSV</button>
+        </div>
       </header>
       {error && <p className="error">{error}</p>}
-      {items.length === 0 ? <p className="empty">No maintenance reports are available.</p> : (
+      {loading ? <p className="empty">Loading report...</p> : items.length === 0 ? <p className="empty">No maintenance reports are available.</p> : (
         <div className="stack">
           {items.map((item, index) => (
             <article className="report-row" key={`${item.created_at}-${index}`}>
@@ -54,7 +71,7 @@ export function ReportsPage() {
                 <strong>{item.computer?.computer_name ?? "Unknown computer"} - {item.component}</strong>
                 <p>{item.recommendation}</p>
               </div>
-              <RiskScoreIndicator compact score={item.risk_score} />
+              {item.risk_score != null && <RiskScoreIndicator compact score={item.risk_score} />}
             </article>
           ))}
         </div>

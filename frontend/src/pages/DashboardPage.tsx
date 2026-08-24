@@ -16,6 +16,7 @@ interface Summary {
   critical_computers: number;
   active_alerts: number;
   average_risk_score: number;
+  system_status: "healthy" | "warning" | "critical";
   average_cpu_temperature: number | null;
   max_cpu_temperature: number | null;
   average_disk_temperature: number | null;
@@ -105,7 +106,7 @@ export function DashboardPage() {
                   onClick={() => navigate("/live-monitoring")}
                 />
               )}
-              <MetricCard label="Avg Failure-Risk" value={`${summary.average_risk_score}%`} icon={TrendingUp} onClick={() => navigate("/predictions")} />
+              <MetricCard label="Avg Operational Risk" value={`${summary.average_risk_score}%`} icon={TrendingUp} onClick={() => navigate("/predictions")} />
               {summary.average_cpu_temperature != null && <MetricCard label="Avg CPU Temp" value={`${summary.average_cpu_temperature} C`} icon={Thermometer} onClick={() => navigate("/live-monitoring")} />}
               {summary.max_cpu_temperature != null && <MetricCard label="Max CPU Temp" value={`${summary.max_cpu_temperature} C`} icon={Thermometer} onClick={() => navigate("/live-monitoring")} />}
             </div>
@@ -178,7 +179,7 @@ export function DashboardPage() {
           <section className="panel">
             <div className="panel-title">
               <div>
-                <h2>Failure Risk Distribution</h2>
+              <h2>Operational Risk Distribution</h2>
                 <p>Explainable scoring breakdown across enrolled machines</p>
               </div>
             </div>

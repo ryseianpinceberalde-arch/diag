@@ -18,7 +18,7 @@ router = APIRouter(prefix="/installer", tags=["installer"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_ROOT = PROJECT_ROOT / "agent"
 AGENT_FILES = ("agent.py", "requirements.txt", "start_with_temperature.ps1")
-AGENT_PACKAGE_VERSION = "2026-08-25-first-reading-v1"
+AGENT_PACKAGE_VERSION = "2026-08-25-operations-v1"
 INSTALL_TOKEN_ALGORITHM = "HS256"
 INSTALL_TOKEN_EXPIRY_HOURS = 24
 

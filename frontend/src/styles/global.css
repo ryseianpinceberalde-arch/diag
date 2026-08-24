@@ -9,6 +9,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 button, input { font: inherit; }
+select, textarea { font: inherit; }
 
 button {
   align-items: center;
@@ -240,6 +241,22 @@ button.secondary:hover {
   height: 8px;
   width: 8px;
 }
+
+.system-pill.warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #b45309;
+}
+
+.system-pill.warning span { background: #f59e0b; }
+
+.system-pill.critical {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #be123c;
+}
+
+.system-pill.critical span { background: #e11d48; }
 
 .icon-button, .profile-button, .mobile-menu {
   background: transparent;
@@ -612,6 +629,34 @@ td strong {
 
 .chart { height: 300px; }
 .stack { display: grid; gap: 12px; }
+
+.toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.command-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.command-list details {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.command-list pre {
+  background: #0b132b;
+  border-radius: 10px;
+  color: #dbeafe;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
 
 .alert-row, .report-row, .list-item {
   align-items: center;
@@ -1105,6 +1150,14 @@ td strong {
   padding: 10px 12px;
 }
 
+.success {
+  background: #ecfdf5;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  color: #047857;
+  padding: 10px 12px;
+}
+
 .login-page {
   background: #0b132b;
   display: grid;
@@ -1146,12 +1199,15 @@ td strong {
   gap: 6px;
 }
 
-input {
+input, select, textarea {
+  background: #fff;
   border: 1px solid #cbd5e1;
   border-radius: 10px;
   min-height: 40px;
   padding: 8px 10px;
 }
+
+textarea { min-height: 84px; }
 
 .app-loading {
   display: grid;

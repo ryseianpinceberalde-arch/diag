@@ -1,50 +1,71 @@
-import { CalendarClock, Wrench } from "lucide-react";
+import { CalendarClock, RefreshCw, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { LoadingBlock } from "../components/LoadingBlock";
 import { StatusBadge } from "../components/StatusBadge";
 import { apiFetch } from "../lib/api";
-
-interface ReportItem {
-  computer: { computer_name: string; device_id: string } | null;
-  risk_level: string;
-  risk_score: number;
-  component: string;
-  recommendation: string;
-  created_at: string;
-}
+import { MaintenanceTicket } from "../types/models";
 
 export function MaintenancePage() {
-  const [items, setItems] = useState<ReportItem[]>([]);
+  const [items, setItems] = useState<MaintenanceTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  async function load() {
+    setError("");
+    setLoading(true);
+    try {
+      const data = await apiFetch<{ items: MaintenanceTicket[] }>("/maintenance");
+      setItems(data.items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load maintenance tickets");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
-    apiFetch<{ items: ReportItem[] }>("/reports/maintenance")
-      .then((data) => setItems(data.items))
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
+    load();
   }, []);
+
+  async function update(id: string, status: MaintenanceTicket["status"]) {
+    try {
+      await apiFetch(`/maintenance/${id}`, { method: "PATCH", body: JSON.stringify({ status }) });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update ticket");
+    }
+  }
 
   return (
     <div className="page">
-      <header className="page-header">
-        <h1>Preventive Maintenance</h1>
-        <p>Prioritized actions generated from prediction history.</p>
+      <header className="page-header row">
+        <div>
+          <h1>Preventive Maintenance</h1>
+          <p>Deduplicated maintenance tickets generated from active threshold problems.</p>
+        </div>
+        <button className="secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
       </header>
       {error && <p className="error">{error}</p>}
-      {loading ? <LoadingBlock /> : items.length === 0 ? <p className="empty">No maintenance actions are queued.</p> : (
+      {loading ? <LoadingBlock /> : items.length === 0 ? <p className="empty">No maintenance tickets are queued.</p> : (
         <div className="maintenance-board">
-          {items.map((item, index) => (
-            <article className="maintenance-card" key={`${item.created_at}-${index}`}>
+          {items.map((item) => (
+            <article className="maintenance-card" key={item.id}>
               <div className="maintenance-icon"><Wrench size={18} /></div>
               <div>
-                <strong>{item.computer?.computer_name ?? "Unknown computer"}</strong>
-                <span>{item.component} · score {item.risk_score}</span>
-                <p>{item.recommendation}</p>
+                <strong>{item.computers?.computer_name ?? "Unknown computer"}</strong>
+                <span>{item.component} - {item.status}</span>
+                <p>{item.description}</p>
+                {item.technician_notes && <p>{item.technician_notes}</p>}
               </div>
               <div className="maintenance-meta">
-                <StatusBadge value={item.risk_level} />
-                <span><CalendarClock size={14} /> {new Date(item.created_at).toLocaleDateString()}</span>
+                <StatusBadge value={item.priority} />
+                <span><CalendarClock size={14} /> {item.due_date ? new Date(item.due_date).toLocaleDateString() : "No due date"}</span>
+                <select value={item.status} onChange={(event) => update(item.id, event.target.value as MaintenanceTicket["status"])} aria-label="Update ticket status">
+                  <option value="pending">Pending</option>
+                  <option value="in_progress">In progress</option>
+                  <option value="completed">Completed</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
               </div>
             </article>
           ))}
