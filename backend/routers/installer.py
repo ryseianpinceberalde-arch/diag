@@ -109,6 +109,12 @@ function Update-ProcessPath {{
   $env:Path = @($machinePath, $userPath) -join ";"
 }}
 
+function Test-IsAdministrator {{
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}}
+
 function Resolve-Python {{
   $candidates = @(
     @{{ Command = "py"; Arguments = @("-3.12") }},
@@ -141,6 +147,26 @@ function Resolve-Python {{
   return $null
 }}
 
+function Install-PythonFromPythonOrg {{
+  $installerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+  $installerPath = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
+  $installScope = "InstallAllUsers=0"
+  if (Test-IsAdministrator) {{
+    $installScope = "InstallAllUsers=1"
+  }}
+
+  Write-Step "Downloading Python installer"
+  Invoke-WebRequest -UseBasicParsing -Uri $installerUrl -OutFile $installerPath
+
+  Write-Step "Installing Python from python.org"
+  $process = Start-Process -FilePath $installerPath -ArgumentList @("/quiet", $installScope, "PrependPath=1", "Include_launcher=1", "Include_pip=1") -Wait -PassThru
+  if (@(0, 3010) -notcontains $process.ExitCode) {{
+    throw "Python installer failed with exit code $($process.ExitCode)."
+  }}
+
+  Update-ProcessPath
+}}
+
 if (-not $AgentApiKey) {{
   throw "Agent API key is missing. Use the install command generated from the PC Sentinel dashboard."
 }}
@@ -154,6 +180,11 @@ if (-not $python) {{
     Update-ProcessPath
     $python = Resolve-Python
   }}
+}}
+
+if (-not $python) {{
+  Install-PythonFromPythonOrg
+  $python = Resolve-Python
 }}
 
 if (-not $python) {{
