@@ -103,17 +103,56 @@ function Write-Step([string]$Message) {{
   Write-Host "[PC Sentinel] $Message"
 }}
 
+function Update-ProcessPath {{
+  $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+  $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  $env:Path = @($machinePath, $userPath) -join ";"
+}}
+
+function Resolve-Python {{
+  $candidates = @(
+    @{{ Command = "py"; Arguments = @("-3.12") }},
+    @{{ Command = "python"; Arguments = @() }},
+    @{{ Command = "python3"; Arguments = @() }}
+  )
+
+  foreach ($candidate in $candidates) {{
+    $command = Get-Command $candidate.Command -ErrorAction SilentlyContinue
+    if (-not $command) {{
+      continue
+    }}
+
+    try {{
+      $probe = & $command.Source @($candidate.Arguments) -c "import sys; print(str(sys.version_info.major) + '.' + str(sys.version_info.minor)); print(sys.executable)" 2>$null
+      if ($LASTEXITCODE -ne 0 -or $probe.Count -lt 2) {{
+        continue
+      }}
+
+      $version = [version]$probe[0]
+      $path = [string]$probe[1]
+      if ($version -ge [version]"3.12" -and (Test-Path $path)) {{
+        return (Get-Item $path).FullName
+      }}
+    }} catch {{
+      continue
+    }}
+  }}
+
+  return $null
+}}
+
 if (-not $AgentApiKey) {{
   throw "Agent API key is missing. Use the install command generated from the PC Sentinel dashboard."
 }}
 
-$python = Get-Command python -ErrorAction SilentlyContinue
+$python = Resolve-Python
 if (-not $python) {{
   $winget = Get-Command winget -ErrorAction SilentlyContinue
   if ($winget) {{
     Write-Step "Installing Python with winget"
     winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
-    $python = Get-Command python -ErrorAction SilentlyContinue
+    Update-ProcessPath
+    $python = Resolve-Python
   }}
 }}
 
@@ -132,8 +171,8 @@ Write-Step "Extracting agent"
 Expand-Archive -Force -Path $zipPath -DestinationPath $InstallDir
 
 Write-Step "Installing Python packages"
-& $python.Source -m pip install --upgrade pip
-& $python.Source -m pip install -r (Join-Path $InstallDir "requirements.txt")
+& $python -m pip install --upgrade pip
+& $python -m pip install -r (Join-Path $InstallDir "requirements.txt")
 
 Write-Step "Writing agent configuration"
 @"
@@ -146,7 +185,7 @@ $taskName = "PC Sentinel Agent"
 $agentPath = Join-Path $InstallDir "agent.py"
 Write-Step "Creating startup task"
 try {{
-  $action = New-ScheduledTaskAction -Execute $python.Source -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
+  $action = New-ScheduledTaskAction -Execute $python -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
   $trigger = New-ScheduledTaskTrigger -AtLogOn
   $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
   Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "PC Sentinel monitoring agent" -Force | Out-Null
@@ -160,11 +199,11 @@ try {{
   @"
 @echo off
 cd /d "$InstallDir"
-start "" /min "$($python.Source)" "$agentPath"
+start "" /min "$python" "$agentPath"
 "@ | Set-Content -Encoding ASCII -Path $cmdPath
 
   Write-Step "Starting agent without scheduled task"
-  Start-Process -FilePath $python.Source -ArgumentList "`"$agentPath`"" -WorkingDirectory $InstallDir -WindowStyle Hidden
+  Start-Process -FilePath $python -ArgumentList "`"$agentPath`"" -WorkingDirectory $InstallDir -WindowStyle Hidden
 }}
 Write-Step "Installed. This computer should appear in PC Sentinel after the first check-in."
 """
