@@ -26,7 +26,7 @@ except Exception:
     wmi = None
 
 AGENT_DIR = Path(__file__).resolve().parent
-load_dotenv(AGENT_DIR / ".env")
+load_dotenv(AGENT_DIR / ".env", override=True)
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
