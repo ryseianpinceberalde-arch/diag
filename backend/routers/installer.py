@@ -103,6 +103,21 @@ function Write-Step([string]$Message) {{
   Write-Host "[PC Sentinel] $Message"
 }}
 
+function Normalize-Url([string]$Value) {{
+  if (-not $Value) {{
+    return $Value
+  }}
+
+  $trimmed = $Value.Trim()
+  if ($trimmed -match "^\\[(https?://[^\\]]+)\\]\\(") {{
+    $trimmed = $Matches[1]
+  }} elseif ($trimmed -match "(https?://[^\\s\\)]+)") {{
+    $trimmed = $Matches[1]
+  }}
+
+  return $trimmed.TrimEnd("/")
+}}
+
 function Update-ProcessPath {{
   $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -170,6 +185,9 @@ function Install-PythonFromPythonOrg {{
 if (-not $AgentApiKey) {{
   throw "Agent API key is missing. Use the install command generated from the PC Sentinel dashboard."
 }}
+
+$ApiBaseUrl = Normalize-Url $ApiBaseUrl
+$PackageUrl = Normalize-Url $PackageUrl
 
 $python = Resolve-Python
 if (-not $python) {{
