@@ -18,7 +18,7 @@ router = APIRouter(prefix="/installer", tags=["installer"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_ROOT = PROJECT_ROOT / "agent"
 AGENT_FILES = ("agent.py", "requirements.txt", "start_with_temperature.ps1")
-AGENT_PACKAGE_VERSION = "2026-08-24-install-flow-v2"
+AGENT_PACKAGE_VERSION = "2026-08-24-install-flow-v3"
 INSTALL_TOKEN_ALGORITHM = "HS256"
 INSTALL_TOKEN_EXPIRY_HOURS = 24
 
@@ -53,8 +53,7 @@ def installer_base_url(request: Request, settings: Settings) -> str:
     return (settings.installer_api_base_url or str(request.base_url)).rstrip("/")
 
 
-@router.get("/agent.zip")
-def agent_package() -> StreamingResponse:
+def build_agent_package() -> BytesIO:
     buffer = BytesIO()
     with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
         for filename in AGENT_FILES:
@@ -63,12 +62,19 @@ def agent_package() -> StreamingResponse:
                 raise HTTPException(status_code=500, detail=f"Missing agent file: {filename}")
             archive.write(path, filename)
     buffer.seek(0)
+    return buffer
+
+
+@router.get("/agent.zip")
+def agent_package() -> StreamingResponse:
+    buffer = build_agent_package()
     return StreamingResponse(
         buffer,
         media_type="application/zip",
         headers={
             "Content-Disposition": 'attachment; filename="pc-sentinel-agent.zip"',
             "X-Agent-Package-Version": AGENT_PACKAGE_VERSION,
+            "Cache-Control": "no-store",
         },
     )
 
@@ -125,7 +131,7 @@ def install_script(
     settings: Settings = Depends(get_settings),
 ) -> Response:
     api_base_url = installer_base_url(request, settings)
-    package_url = f"{api_base_url}/api/installer/agent.zip"
+    package_url = f"{api_base_url}/api/installer/agent.zip?v={AGENT_PACKAGE_VERSION}"
     agent_api_key_default = ""
     if token:
         validate_install_token(token, settings)
@@ -134,7 +140,8 @@ def install_script(
   [string]$AgentApiKey = {powershell_literal(agent_api_key_default)},
   [string]$ApiBaseUrl = "{api_base_url}",
   [string]$PackageUrl = "{package_url}",
-  [string]$InstallDir = "$env:ProgramData\\PCSentinel\\agent"
+  [string]$InstallDir = "$env:ProgramData\\PCSentinel\\agent",
+  [switch]$AllowLocalhost
 )
 
 $ErrorActionPreference = "Stop"
@@ -174,8 +181,8 @@ function Assert-DownloadedFile([string]$Path, [string]$Kind) {{
 }}
 
 function Normalize-Url([string]$Value) {{
-  if (-not $Value) {{
-    return $Value
+  if ([string]::IsNullOrWhiteSpace($Value)) {{
+    return ""
   }}
 
   $trimmed = $Value.Trim()
@@ -186,6 +193,10 @@ function Normalize-Url([string]$Value) {{
   }}
 
   return $trimmed.TrimEnd("/")
+}}
+
+function Test-LocalApiUrl([string]$Value) {{
+  return $Value -match "localhost" -or $Value -match "127\\.0\\.0\\.1"
 }}
 
 function Update-ProcessPath {{
@@ -257,13 +268,24 @@ if (-not $AgentApiKey) {{
 }}
 
 $ApiBaseUrl = Normalize-Url $ApiBaseUrl
+if ([string]::IsNullOrWhiteSpace($ApiBaseUrl)) {{
+  $ApiBaseUrl = "{api_base_url}"
+}}
 $PackageUrl = Normalize-Url $PackageUrl
+if ([string]::IsNullOrWhiteSpace($PackageUrl)) {{
+  $PackageUrl = "$ApiBaseUrl/api/installer/agent.zip?v={AGENT_PACKAGE_VERSION}"
+}}
+if ((Test-LocalApiUrl $ApiBaseUrl) -and -not $AllowLocalhost) {{
+  throw "[PC Sentinel] Invalid production API server: $ApiBaseUrl"
+}}
 
 Write-Host "========================================="
 Write-Host "           PC SENTINEL INSTALLER"
 Write-Host "========================================="
 Write-Step "[1/7] Connecting to PC Sentinel server"
+Write-Step "API Server: $ApiBaseUrl"
 Invoke-WithRetry {{ Invoke-WebRequest -UseBasicParsing -Uri "$ApiBaseUrl/api/health" -TimeoutSec 20 | Out-Null }} "Health check"
+Write-Step "Server reachable."
 
 Write-Step "[2/7] Checking Python runtime"
 $python = Resolve-Python
@@ -307,6 +329,16 @@ API_BASE_URL=$ApiBaseUrl
 AGENT_API_KEY=$AgentApiKey
 COLLECTION_INTERVAL_SECONDS=60
 "@ | Set-Content -Encoding UTF8 -Path (Join-Path $InstallDir ".env")
+Write-Step "Configuration:"
+Write-Host $ApiBaseUrl
+
+$writtenConfig = Get-Content -LiteralPath (Join-Path $InstallDir ".env") -Raw
+if ($writtenConfig -notmatch [regex]::Escape("API_BASE_URL=$ApiBaseUrl")) {{
+  throw "[PC Sentinel] Agent configuration did not contain the selected API server."
+}}
+if ((Test-LocalApiUrl $writtenConfig) -and -not $AllowLocalhost) {{
+  throw "[PC Sentinel] Agent configuration contains a localhost API URL."
+}}
 
 $taskName = "PC Sentinel Agent"
 $agentPath = Join-Path $InstallDir "agent.py"
@@ -314,7 +346,7 @@ $agentPath = Join-Path $InstallDir "agent.py"
 Write-Step "[6/7] Registering computer"
 Push-Location $InstallDir
 try {{
-  & $python $agentPath --once
+  & $python $agentPath --once --api-base-url $ApiBaseUrl
   $checkInExitCode = $LASTEXITCODE
 }} finally {{
   Pop-Location
@@ -322,8 +354,9 @@ try {{
 if ($checkInExitCode -ne 0) {{
   throw "Agent could not check in. Open $InstallDir\\agent.log on this computer for details."
 }}
+Write-Step "Computer registered successfully."
 
-Write-Step "[7/7] Installing startup task"
+Write-Step "[7/7] Starting agent"
 try {{
   $action = New-ScheduledTaskAction -Execute $python -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
   $trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -345,7 +378,12 @@ start "" /min "$python" "$agentPath"
   Write-Step "Starting agent without scheduled task"
   Start-Process -FilePath $python -ArgumentList "`"$agentPath`"" -WorkingDirectory $InstallDir -WindowStyle Hidden
 }}
-Write-Step "PC Sentinel installed successfully. This computer should appear online after the first diagnostics check-in."
+Write-Host "========================================="
+Write-Host "PC SENTINEL INSTALLED SUCCESSFULLY"
+Write-Host "========================================="
+Write-Host "Computer: $env:COMPUTERNAME"
+Write-Host "Server: $ApiBaseUrl"
+Write-Host "Status: ONLINE"
 """
     return Response(
         content=script,

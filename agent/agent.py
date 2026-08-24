@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import logging
@@ -9,7 +10,6 @@ import signal
 import socket
 import sqlite3
 import subprocess
-import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -26,12 +26,30 @@ except Exception:
     wmi = None
 
 AGENT_DIR = Path(__file__).resolve().parent
-load_dotenv(AGENT_DIR / ".env", override=True)
+CONFIG_PATH = AGENT_DIR / ".env"
+DEFAULT_API_BASE_URL = "https://pc-sentinel-api.onrender.com"
+load_dotenv(CONFIG_PATH, override=True)
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
+parser = argparse.ArgumentParser(description="PC Sentinel monitoring agent")
+parser.add_argument("--once", action="store_true", help="Register once and exit")
+parser.add_argument("--api-base-url", default=None, help="Override the API base URL for this run")
+parser.add_argument("--dev", action="store_true", help="Allow localhost API URLs for development")
+ARGS, _UNKNOWN_ARGS = parser.parse_known_args()
+
+
+def normalize_url(value: str | None) -> str:
+    return (value or DEFAULT_API_BASE_URL).strip().rstrip("/")
+
+
+def is_local_api_url(value: str) -> bool:
+    lowered = value.lower()
+    return "localhost" in lowered or "127.0.0.1" in lowered
+
+
+API_BASE_URL = normalize_url(ARGS.api_base_url or os.getenv("API_BASE_URL") or DEFAULT_API_BASE_URL)
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 INTERVAL = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "60"))
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.1.1"
 QUEUE_PATH = Path(os.getenv("AGENT_QUEUE_PATH", str(AGENT_DIR / "agent_queue.sqlite3")))
 DEVICE_ID_PATH = Path(os.getenv("AGENT_DEVICE_ID_PATH", str(AGENT_DIR / "device-id.txt")))
 LHM_DLL_PATH = Path(os.getenv("LIBRE_HARDWARE_MONITOR_DLL", "..\\tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"))
@@ -44,9 +62,38 @@ logging.basicConfig(
 logger = logging.getLogger("diagnostic-agent")
 stop_requested = False
 
+if is_local_api_url(API_BASE_URL) and not ARGS.dev:
+    raise RuntimeError(f"Invalid production API URL: {API_BASE_URL}. Use --dev only for local development.")
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def log_startup_context() -> None:
+    logger.info("PC Sentinel Agent starting")
+    logger.info("Agent version: %s", AGENT_VERSION)
+    logger.info("Agent path: %s", Path(__file__).resolve())
+    logger.info("Configuration path: %s", CONFIG_PATH)
+    logger.info("API Base URL: %s", API_BASE_URL)
+    logger.info("Registration endpoint: %s", f"{API_BASE_URL}/api/agents/register")
+    logger.info("Readings endpoint: %s", f"{API_BASE_URL}/api/readings")
+
+
+def check_api_health() -> bool:
+    health_url = f"{API_BASE_URL}/api/health"
+    for attempt in range(1, 4):
+        try:
+            response = requests.get(health_url, timeout=10)
+            if response.ok:
+                logger.info("API health check succeeded: %s", health_url)
+                return True
+            logger.warning("API health check failed server=%s status=%s body=%s", API_BASE_URL, response.status_code, response.text[:500])
+        except Exception as exc:
+            logger.warning("API health check failed server=%s attempt=%s error=%s", API_BASE_URL, attempt, exc)
+        if attempt < 3:
+            time.sleep(3 * attempt)
+    return False
 
 
 def stable_device_id() -> str:
@@ -501,20 +548,21 @@ class Queue:
 
 
 def post(endpoint: str, payload: dict[str, Any]) -> bool:
+    url = f"{API_BASE_URL}/api/{endpoint}"
     try:
-        response = requests.post(
-            f"{API_BASE_URL}/api/{endpoint}",
-            headers={"X-Agent-Api-Key": AGENT_API_KEY},
-            json=payload,
-            timeout=10,
-        )
+        response = requests.post(url, headers={"X-Agent-Api-Key": AGENT_API_KEY}, json=payload, timeout=10)
         if response.status_code >= 500:
-            logger.warning("Post to %s failed with %s: %s", endpoint, response.status_code, response.text[:500])
+            logger.warning("Post failed server=%s endpoint=%s status=%s body=%s", API_BASE_URL, url, response.status_code, response.text[:500])
             return False
         response.raise_for_status()
         return True
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else "unknown"
+        body = exc.response.text[:500] if exc.response is not None else ""
+        logger.warning("Post failed server=%s endpoint=%s status=%s error=%s body=%s", API_BASE_URL, url, status_code, exc, body)
+        return False
     except Exception as exc:
-        logger.warning("Post to %s failed: %s", endpoint, exc)
+        logger.warning("Post failed server=%s endpoint=%s error=%s", API_BASE_URL, url, exc)
         return False
 
 
@@ -524,9 +572,14 @@ def request_stop(*_: Any) -> None:
 
 
 def check_in_once() -> int:
+    log_startup_context()
     if not AGENT_API_KEY:
         logger.error("AGENT_API_KEY is required")
         print("AGENT_API_KEY is required")
+        return 1
+
+    if not check_api_health():
+        print(f"Could not reach {API_BASE_URL}. Check agent.log for details.")
         return 1
 
     metadata = computer_metadata()
@@ -539,8 +592,10 @@ def check_in_once() -> int:
 
 
 def main() -> None:
+    log_startup_context()
     if not AGENT_API_KEY:
         raise RuntimeError("AGENT_API_KEY is required")
+    check_api_health()
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     queue = Queue(QUEUE_PATH)
@@ -563,6 +618,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if "--once" in sys.argv:
+    if ARGS.once:
         raise SystemExit(check_in_once())
     main()
