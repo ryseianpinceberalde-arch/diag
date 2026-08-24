@@ -234,8 +234,14 @@ $taskName = "PC Sentinel Agent"
 $agentPath = Join-Path $InstallDir "agent.py"
 
 Write-Step "Verifying agent check-in"
-& $python $agentPath --once
-if ($LASTEXITCODE -ne 0) {{
+Push-Location $InstallDir
+try {{
+  & $python $agentPath --once
+  $checkInExitCode = $LASTEXITCODE
+}} finally {{
+  Pop-Location
+}}
+if ($checkInExitCode -ne 0) {{
   throw "Agent could not check in. Open $InstallDir\\agent.log on this computer for details."
 }}
 

@@ -25,17 +25,18 @@ try:
 except Exception:
     wmi = None
 
-load_dotenv()
+AGENT_DIR = Path(__file__).resolve().parent
+load_dotenv(AGENT_DIR / ".env")
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 INTERVAL = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "60"))
 AGENT_VERSION = "0.1.0"
-QUEUE_PATH = Path(os.getenv("AGENT_QUEUE_PATH", "agent_queue.sqlite3"))
+QUEUE_PATH = Path(os.getenv("AGENT_QUEUE_PATH", str(AGENT_DIR / "agent_queue.sqlite3")))
 LHM_DLL_PATH = Path(os.getenv("LIBRE_HARDWARE_MONITOR_DLL", "..\\tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"))
 
 logging.basicConfig(
-    filename="agent.log",
+    filename=str(AGENT_DIR / "agent.log"),
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
