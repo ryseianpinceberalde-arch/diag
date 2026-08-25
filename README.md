@@ -164,7 +164,7 @@ Set-Location agent
 .\start_with_temperature.ps1
 ```
 
-Some PCs still hide sensor values at the BIOS/driver level. In that case the dashboard hides the missing sensor while the rest of the diagnostics continue to work.
+Some PCs still hide sensor values at the BIOS/driver level. In that case the dashboard shows `No sensor` while the rest of the diagnostics continue to work.
 
 ## Install Agent From Online Backend
 
@@ -176,7 +176,7 @@ From the dashboard, open **Add Computer** and copy the generated install command
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing 'https://YOUR_API_DOMAIN/api/installer/install.ps1?token=INSTALL_TOKEN' -OutFile $env:TEMP\pc-sentinel-install.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\pc-sentinel-install.ps1 -ApiBaseUrl 'https://YOUR_API_DOMAIN'"
 ```
 
-Only a logged-in dashboard admin can generate the temporary installer token. The installer downloads `agent.zip`, installs Python packages, writes the agent `.env`, creates a Windows startup task named `PC Sentinel Agent`, and starts the agent.
+Only a logged-in dashboard admin can generate the temporary installer token. The installer downloads `agent.zip`, installs Python packages, installs LibreHardwareMonitor sensor support, writes the agent `.env`, creates a Windows startup task named `PC Sentinel Agent`, and starts the agent.
 
 ## Run Tests and Checks
 

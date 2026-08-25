@@ -31,7 +31,6 @@ export function LiveMonitoringPage() {
         <div className="telemetry-grid">
           {computers.map((computer) => {
             const reading = computer.latest_reading;
-            const hasTemperature = reading?.cpu_temperature != null || reading?.disk_temperature != null;
             const hasFan = reading?.fan_speed_rpm != null || reading?.fan_speed_percent != null;
             const hasNetwork = reading?.network_latency != null || reading?.packet_loss != null;
 
@@ -48,19 +47,17 @@ export function LiveMonitoringPage() {
                   <span><Cpu size={16} /> CPU</span>
                   <span><MemoryStick size={16} /> RAM</span>
                   <span><HardDrive size={16} /> Disk</span>
-                  {hasTemperature && <span><Thermometer size={16} /> Temp</span>}
+                  <span><Thermometer size={16} /> Temp</span>
                   {hasFan && <span><Wind size={16} /> Fan</span>}
                   {hasNetwork && <span><Network size={16} /> Network</span>}
                 </div>
                 <UsageProgressBar label="CPU" value={reading?.cpu_usage} />
                 <UsageProgressBar label="RAM" value={reading?.ram_usage} />
                 <UsageProgressBar label="Disk" value={reading?.disk_usage} />
-                {hasTemperature && (
-                  <div className="temperature-row">
-                    <TemperatureBadge label="CPU temp" value={reading?.cpu_temperature} />
-                    <TemperatureBadge label="Disk temp" value={reading?.disk_temperature} />
-                  </div>
-                )}
+                <div className="temperature-row">
+                  <TemperatureBadge label="CPU temp" value={reading?.cpu_temperature} />
+                  <TemperatureBadge label="Disk temp" value={reading?.disk_temperature} />
+                </div>
                 {hasFan && <FanSpeedBadge label="Fan speed" rpm={reading?.fan_speed_rpm} percent={reading?.fan_speed_percent} />}
                 {hasNetwork && (
                   <div className="network-metrics">

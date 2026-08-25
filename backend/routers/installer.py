@@ -18,7 +18,8 @@ router = APIRouter(prefix="/installer", tags=["installer"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_ROOT = PROJECT_ROOT / "agent"
 AGENT_FILES = ("agent.py", "requirements.txt", "start_with_temperature.ps1")
-AGENT_PACKAGE_VERSION = "2026-08-25-operations-v1"
+AGENT_PACKAGE_VERSION = "2026-08-25-temperature-v2"
+LIBRE_HARDWARE_MONITOR_URL = "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip"
 INSTALL_TOKEN_ALGORITHM = "HS256"
 INSTALL_TOKEN_EXPIRY_HOURS = 24
 
@@ -282,12 +283,12 @@ if ((Test-LocalApiUrl $ApiBaseUrl) -and -not $AllowLocalhost) {{
 Write-Host "========================================="
 Write-Host "           PC SENTINEL INSTALLER"
 Write-Host "========================================="
-Write-Step "[1/7] Connecting to PC Sentinel server"
+Write-Step "[1/8] Connecting to PC Sentinel server"
 Write-Step "API Server: $ApiBaseUrl"
 Invoke-WithRetry {{ Invoke-WebRequest -UseBasicParsing -Uri "$ApiBaseUrl/api/health" -TimeoutSec 20 | Out-Null }} "Health check"
 Write-Step "Server reachable."
 
-Write-Step "[2/7] Checking Python runtime"
+Write-Step "[2/8] Checking Python runtime"
 $python = Resolve-Python
 if (-not $python) {{
   $winget = Get-Command winget -ErrorAction SilentlyContinue
@@ -312,22 +313,35 @@ Write-Step "Creating install folder"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 $zipPath = Join-Path $env:TEMP "pc-sentinel-agent.zip"
-Write-Step "[3/7] Downloading agent package"
+Write-Step "[3/8] Downloading agent package"
 Invoke-WithRetry {{ Invoke-WebRequest -UseBasicParsing -Uri $PackageUrl -OutFile $zipPath -TimeoutSec 60 }} "Agent download"
 Assert-DownloadedFile $zipPath "Agent package"
 
-Write-Step "[4/7] Extracting agent"
+Write-Step "[4/8] Extracting agent"
 Expand-Archive -Force -Path $zipPath -DestinationPath $InstallDir
 
-Write-Step "[5/7] Installing Python packages"
+Write-Step "[5/8] Installing Python packages"
 & $python -m pip install --upgrade pip
 & $python -m pip install -r (Join-Path $InstallDir "requirements.txt")
+
+Write-Step "[6/8] Installing hardware sensor support"
+$lhmDir = Join-Path $InstallDir "LibreHardwareMonitor"
+$lhmZipPath = Join-Path $env:TEMP "LibreHardwareMonitor.zip"
+New-Item -ItemType Directory -Force -Path $lhmDir | Out-Null
+Invoke-WithRetry {{ Invoke-WebRequest -UseBasicParsing -Uri {powershell_literal(LIBRE_HARDWARE_MONITOR_URL)} -OutFile $lhmZipPath -TimeoutSec 90 }} "LibreHardwareMonitor download"
+Assert-DownloadedFile $lhmZipPath "LibreHardwareMonitor package"
+Expand-Archive -Force -Path $lhmZipPath -DestinationPath $lhmDir
+$lhmDllPath = Join-Path $lhmDir "LibreHardwareMonitorLib.dll"
+if (!(Test-Path $lhmDllPath)) {{
+  throw "LibreHardwareMonitorLib.dll was not found after extraction."
+}}
 
 Write-Step "Writing agent configuration"
 @"
 API_BASE_URL=$ApiBaseUrl
 AGENT_API_KEY=$AgentApiKey
 COLLECTION_INTERVAL_SECONDS=60
+LIBRE_HARDWARE_MONITOR_DLL=$lhmDllPath
 "@ | Set-Content -Encoding UTF8 -Path (Join-Path $InstallDir ".env")
 Write-Step "Configuration:"
 Write-Host $ApiBaseUrl
@@ -343,7 +357,7 @@ if ((Test-LocalApiUrl $writtenConfig) -and -not $AllowLocalhost) {{
 $taskName = "PC Sentinel Agent"
 $agentPath = Join-Path $InstallDir "agent.py"
 
-Write-Step "[6/7] Registering computer"
+Write-Step "[7/8] Registering computer"
 Push-Location $InstallDir
 try {{
   & $python $agentPath --once --api-base-url $ApiBaseUrl
@@ -356,12 +370,17 @@ if ($checkInExitCode -ne 0) {{
 }}
 Write-Step "Computer registered successfully."
 
-Write-Step "[7/7] Starting agent"
+Write-Step "[8/8] Starting agent"
 try {{
   $action = New-ScheduledTaskAction -Execute $python -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
   $trigger = New-ScheduledTaskTrigger -AtLogOn
   $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "PC Sentinel monitoring agent" -Force | Out-Null
+  if (Test-IsAdministrator) {{
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "PC Sentinel monitoring agent" -Force | Out-Null
+  }} else {{
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "PC Sentinel monitoring agent" -Force | Out-Null
+  }}
 
   Write-Step "Starting agent"
   Start-ScheduledTask -TaskName $taskName
