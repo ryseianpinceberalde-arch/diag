@@ -1,15 +1,16 @@
 import { Thermometer } from "lucide-react";
 
-function temperatureLevel(value: number | null | undefined) {
-  if (value == null) return "unknown";
+function temperatureLevel(value: number) {
   if (value >= 85) return "critical";
   if (value >= 70) return "warning";
   return "normal";
 }
 
 export function TemperatureBadge({ label, value }: { label: string; value: number | null | undefined }) {
+  if (value == null) return null;
+
   const level = temperatureLevel(value);
-  const displayValue = value == null ? "No sensor" : `${Math.round(value)} C`;
+  const displayValue = `${Math.round(value)} C`;
 
   return (
     <div className={`temperature ${level}`} title={`${label}: ${displayValue}`}>

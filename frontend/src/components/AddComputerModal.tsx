@@ -81,8 +81,8 @@ export function AddComputerModal({ open, onClose }: { open: boolean; onClose: ()
 
           <article>
             <strong>Enable hardware sensor readings</strong>
-            <p>The installer adds LibreHardwareMonitor support so the agent can read CPU, disk, and fan sensors when Windows exposes them.</p>
-            <p className="helper-text">If the hardware or Windows permissions do not expose a sensor, the dashboard shows No sensor while CPU, RAM, disk, and network readings still work.</p>
+            <p>Windows often hides CPU, disk, and fan sensors. To show real sensor values, run LibreHardwareMonitor or OpenHardwareMonitor on the monitored computer with WMI enabled, then restart `python .\\agent.py`.</p>
+            <p className="helper-text">If the hardware does not expose a sensor to Windows, the dashboard shows No sensor while CPU, RAM, disk, and network readings still work.</p>
           </article>
 
           <article>
