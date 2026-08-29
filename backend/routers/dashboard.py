@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends
 from supabase import Client
 from dependencies import admin_client, require_admin
@@ -6,6 +7,7 @@ from services.settings import load_thresholds
 from services.status import effective_status
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_admin)])
+logger = logging.getLogger("pc_sentinel.dashboard")
 
 
 @router.get("/summary")
@@ -14,6 +16,17 @@ def dashboard_summary(client: Client = Depends(admin_client)) -> dict:
     computers = client.table("computers").select("*").execute().data or []
     latest_readings = client.table("diagnostic_readings").select("*").order("recorded_at", desc=True).limit(500).execute().data or []
     alerts = client.table("alerts").select("id", count="exact").in_("status", ["active", "acknowledged"]).execute()
+    try:
+        tickets = client.table("repair_tickets").select("id,status", count="exact").in_("status", ["open", "assigned", "in_progress", "waiting_for_parts"]).execute()
+        open_tickets = tickets.count or 0
+    except Exception:
+        try:
+            tickets = client.table("maintenance_tickets").select("id,status", count="exact").in_("status", ["pending", "in_progress"]).execute()
+            open_tickets = tickets.count or 0
+        except Exception:
+            # Older deployments may not have the additive maintenance migration yet.
+            logger.warning("Could not load ticket count; continuing dashboard summary", exc_info=True)
+            open_tickets = 0
     predictions = client.table("predictions").select("computer_id,risk_score,risk_level").order("created_at", desc=True).limit(200).execute().data or []
     latest_predictions = {}
     for prediction in predictions:
@@ -22,6 +35,10 @@ def dashboard_summary(client: Client = Depends(admin_client)) -> dict:
     latest_by_computer = {}
     for reading in latest_readings:
         latest_by_computer.setdefault(reading.get("computer_id"), reading)
+    trends = [
+        {"time": row.get("recorded_at"), "cpu": row.get("cpu_usage"), "ram": row.get("ram_usage"), "disk": row.get("disk_usage")}
+        for row in reversed(latest_readings[:24])
+    ]
     cpu_temps = [row["cpu_temperature"] for row in latest_by_computer.values() if row.get("cpu_temperature") is not None]
     disk_temps = [row["disk_temperature"] for row in latest_by_computer.values() if row.get("disk_temperature") is not None]
     fan_speeds = [row["fan_speed_rpm"] for row in latest_by_computer.values() if row.get("fan_speed_rpm") is not None]
@@ -42,6 +59,8 @@ def dashboard_summary(client: Client = Depends(admin_client)) -> dict:
         "critical_computers": sum(1 for level in health_levels if level == "critical"),
         "system_status": system_status,
         "active_alerts": alerts.count or 0,
+        "open_tickets": open_tickets,
+        "trends": trends,
         "average_risk_score": round(sum(scores) / len(scores), 1) if scores else 0,
         "average_cpu_temperature": round(sum(cpu_temps) / len(cpu_temps), 1) if cpu_temps else None,
         "max_cpu_temperature": round(max(cpu_temps), 1) if cpu_temps else None,

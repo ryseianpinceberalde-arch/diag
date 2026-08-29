@@ -1,28 +1,43 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from ipaddress import IPv4Address, IPv6Address
 from typing import Any, Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 Severity = Literal["low", "medium", "high", "critical"]
 EventSeverity = Literal["info", "warning", "error", "critical"]
 
 
 class AgentRegistration(BaseModel):
-    device_id: str = Field(min_length=3, max_length=200)
-    computer_name: str = Field(min_length=1, max_length=200)
+    model_config = ConfigDict(populate_by_name=True)
+
+    device_id: str = Field(min_length=3, max_length=200, validation_alias=AliasChoices("device_id", "deviceId"))
+    computer_name: str = Field(min_length=1, max_length=200, validation_alias=AliasChoices("computer_name", "hostname"))
+    display_name: str | None = None
+    asset_tag: str | None = None
+    device_type: str | None = None
     manufacturer: str | None = None
     model: str | None = None
-    serial_number: str | None = None
-    operating_system: str | None = None
+    serial_number: str | None = Field(default=None, validation_alias=AliasChoices("serial_number", "serialNumber"))
+    operating_system: str | None = Field(default=None, validation_alias=AliasChoices("operating_system", "operatingSystem"))
+    os_version: str | None = Field(default=None, validation_alias=AliasChoices("os_version", "osVersion"))
+    architecture: str | None = None
+    department_id: str | None = None
+    location_id: str | None = None
+    assigned_user_id: str | None = None
+    owner_name: str | None = None
+    purchase_date: date | None = None
+    warranty_start_date: date | None = None
+    warranty_end_date: date | None = None
     ip_address: IPv4Address | IPv6Address | None = None
-    agent_version: str | None = None
-    registration_code: str | None = Field(default=None, min_length=1, max_length=200)
+    agent_version: str | None = Field(default=None, validation_alias=AliasChoices("agent_version", "agentVersion"))
+    registration_code: str | None = Field(default=None, min_length=1, max_length=200, validation_alias=AliasChoices("registration_code", "registrationCode"))
 
 
 class AgentTelemetry(BaseModel):
-    device_id: str = Field(min_length=3, max_length=200)
-    agent_version: str | None = None
-    timestamp: datetime | None = None
+    model_config = ConfigDict(populate_by_name=True)
+    device_id: str = Field(min_length=3, max_length=200, validation_alias=AliasChoices("device_id", "deviceId"))
+    agent_version: str | None = Field(default=None, validation_alias=AliasChoices("agent_version", "agentVersion"))
+    timestamp: datetime | None = Field(default=None, validation_alias=AliasChoices("timestamp", "recordedAt"))
     last_heartbeat: datetime | None = None
     agent_status: str | None = None
     system: dict[str, Any] = Field(default_factory=dict)
@@ -33,11 +48,30 @@ class AgentTelemetry(BaseModel):
     gpu: list[dict[str, Any]] = Field(default_factory=list)
     battery: dict[str, Any] | None = None
     temperature: dict[str, Any] = Field(default_factory=dict)
-    processes: list[dict[str, Any]] = Field(default_factory=list, max_length=15)
+    processes: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
     hardware_health: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_wire_format(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if "topProcesses" in normalized and "processes" not in normalized:
+            normalized["processes"] = normalized["topProcesses"]
+        for section, aliases in {
+            "cpu": {"usagePercent": "usage_percent", "physicalCores": "physical_cores", "logicalCores": "logical_processors", "clockMHz": "clock_speed_mhz", "temperatureC": "temperature_c"},
+            "memory": {"totalBytes": "total_bytes", "usedBytes": "used_bytes", "availableBytes": "available_bytes", "usagePercent": "usage_percent"},
+        }.items():
+            if isinstance(normalized.get(section), dict):
+                normalized[section] = {aliases.get(key, key): item for key, item in normalized[section].items()}
+        return normalized
 
     @model_validator(mode="after")
     def validate_percentages(self) -> "AgentTelemetry":
+        if self.timestamp and self.timestamp > datetime.now(timezone.utc) + timedelta(minutes=5):
+            raise ValueError("timestamp cannot be more than five minutes in the future")
         values = [
             ("cpu.usage_percent", self.cpu.get("usage_percent")),
             ("memory.usage_percent", self.memory.get("usage_percent")),
@@ -75,6 +109,21 @@ class Computer(AgentRegistration):
     status: str
     last_seen: datetime | None = None
     created_at: datetime
+
+
+class ComputerUpdate(BaseModel):
+    display_name: str | None = None
+    asset_tag: str | None = None
+    device_type: str | None = None
+    department_id: str | None = None
+    location_id: str | None = None
+    assigned_user_id: str | None = None
+    owner_name: str | None = None
+    purchase_date: datetime | None = None
+    warranty_start_date: datetime | None = None
+    warranty_end_date: datetime | None = None
+    tags: list[str] | None = None
+    notes: str | None = None
 
 
 class DiagnosticReadingIn(BaseModel):

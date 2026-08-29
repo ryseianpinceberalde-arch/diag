@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     agent_api_key: str = Field(alias="AGENT_API_KEY")
     cors_origins: Annotated[list[str], NoDecode] = Field(default=["http://localhost:5173"], alias="CORS_ORIGINS")
     installer_api_base_url: str | None = Field(default=None, alias="INSTALLER_API_BASE_URL")
+    agent_heartbeat_interval_seconds: int = Field(default=10, ge=10, alias="AGENT_HEARTBEAT_INTERVAL_SECONDS")
+    device_offline_after_seconds: int = Field(default=120, ge=60, alias="DEVICE_OFFLINE_AFTER_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

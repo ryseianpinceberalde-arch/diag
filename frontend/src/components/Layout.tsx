@@ -1,4 +1,4 @@
-import { Activity, Bell, FileText, Monitor, Settings, Shield, TrendingUp, Wrench } from "lucide-react";
+import { Activity, Bell, Bot, Building2, ClipboardList, FileText, Monitor, ScrollText, Settings, Shield, TrendingUp, Wrench } from "lucide-react";
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { Header } from "./Header";
@@ -8,10 +8,15 @@ const links = [
   { to: "/", label: "Dashboard", icon: Activity },
   { to: "/computers", label: "Computers", icon: Monitor },
   { to: "/live-monitoring", label: "Live Monitoring", icon: Activity },
+  { to: "/diagnostics", label: "Diagnostics", icon: ClipboardList },
   { to: "/alerts", label: "Alerts", icon: Bell },
   { to: "/predictions", label: "Predictions", icon: TrendingUp },
+  { to: "/tickets", label: "Repair Tickets", icon: Wrench },
   { to: "/maintenance", label: "Maintenance", icon: Wrench },
+  { to: "/organization", label: "Organization", icon: Building2 },
+  { to: "/agents", label: "Agent Management", icon: Bot },
   { to: "/reports", label: "Reports", icon: FileText },
+  { to: "/audit-logs", label: "Audit Logs", icon: ScrollText },
   { to: "/users", label: "Users & Access", icon: Settings },
   { to: "/settings", label: "Settings", icon: Settings }
 ];

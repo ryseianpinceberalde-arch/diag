@@ -1,5 +1,5 @@
 import { Download, Eye, PlusCircle, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { LoadingBlock } from "../components/LoadingBlock";
 import { AddComputerModal } from "../components/AddComputerModal";
@@ -19,37 +19,33 @@ export function ComputersPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [searchParams] = useSearchParams();
   const search = (searchParams.get("search") ?? "").toLowerCase();
+  const [statusFilter, setStatusFilter] = useState(searchParams.get("status") ?? "");
+  const [typeFilter, setTypeFilter] = useState("");
 
-  async function load(showLoading = true) {
+  const load = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setError("");
     try {
-      const data = await apiFetch<{ items: Computer[] }>("/computers");
+      const params = new URLSearchParams();
+      if (statusFilter) params.set("status", statusFilter);
+      if (typeFilter) params.set("device_type", typeFilter);
+      if (search) params.set("search", search);
+      const data = await apiFetch<{ items: Computer[] }>(`/computers${params.size ? `?${params}` : ""}`);
       setComputers(data.items);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load computers");
     } finally {
       setLoading(false);
     }
-  }
+  }, [statusFilter, typeFilter, search]);
 
   useEffect(() => {
     load();
     const timer = window.setInterval(() => load(false), 10000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [load]);
 
-  const filteredComputers = computers.filter((computer) => {
-    if (!search) return true;
-    return [
-      computer.computer_name,
-      computer.device_id,
-      computer.operating_system,
-      computer.ip_address,
-      computer.manufacturer,
-      computer.model
-    ].some((value) => (value ?? "").toLowerCase().includes(search));
-  });
+  const filteredComputers = computers;
 
   function exportInventory() {
     exportCsv("computer-inventory.csv", filteredComputers.map((computer) => ({
@@ -82,6 +78,10 @@ export function ComputersPage() {
         </div>
       </header>
       {error && <p className="error">{error}</p>}
+      <div className="toolbar">
+        <label>Status <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option><option value="online">Online</option><option value="connection_lost">Connection lost</option><option value="offline">Offline</option><option value="warning">Warning</option><option value="critical">Critical</option></select></label>
+        <label>Type <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">All device types</option><option value="computer">Computer</option><option value="laptop">Laptop</option></select></label>
+      </div>
       {loading ? <LoadingBlock /> : computers.length === 0 ? <p className="empty">No computers have registered yet.</p> : (
         <div className="table-wrap sentinel-table">
           <table>
@@ -111,7 +111,7 @@ export function ComputersPage() {
                   <td><FanSpeedBadge label="Fan" rpm={computer.latest_reading?.fan_speed_rpm} percent={computer.latest_reading?.fan_speed_percent} /></td>
                   <td><RiskScoreIndicator compact score={computer.latest_prediction?.risk_score ?? 0} /></td>
                   <td><StatusBadge value={computer.status} /></td>
-                  <td><Link className="icon-link" to={`/computers/${computer.id}`} aria-label={`View ${computer.computer_name}`}><Eye size={18} /></Link></td>
+                  <td><Link className="icon-link" to={`/devices/${computer.id}`} aria-label={`View ${computer.computer_name}`}><Eye size={18} /></Link></td>
                 </tr>
               ))}
             </tbody>

@@ -4,6 +4,17 @@ from supabase import Client
 from config import Settings, get_settings
 from database import get_supabase_admin, get_supabase_anon
 
+ROLE_ALIASES = {
+    "super_admin": "administrator",
+    "it_admin": "administrator",
+    "department_user": "viewer",
+}
+
+
+def normalize_role(role: str | None) -> str:
+    normalized = (role or "administrator").lower()
+    return ROLE_ALIASES.get(normalized, normalized)
+
 
 def require_agent_api_key(
     x_agent_api_key: str | None = Header(default=None),
@@ -46,7 +57,7 @@ def require_admin(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token")
     profile = admin.table("profiles").select("role").eq("id", user.id).limit(1).execute().data or []
-    role = profile[0].get("role") if profile else "administrator"
+    role = normalize_role(profile[0].get("role") if profile else "administrator")
     if role not in {"administrator", "technician", "viewer"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive or unauthorized user")
     return {"id": user.id, "email": user.email, "role": role}
@@ -60,7 +71,7 @@ def require_role(*allowed_roles: str):
     ) -> dict:
         user = require_admin(authorization, anon, admin)
         profile = admin.table("profiles").select("role").eq("id", user["id"]).limit(1).execute().data or []
-        role = profile[0].get("role") if profile else "administrator"
+        role = normalize_role(profile[0].get("role") if profile else "administrator")
         if role not in allowed_roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         user["role"] = role

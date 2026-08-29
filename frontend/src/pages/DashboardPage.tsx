@@ -1,4 +1,4 @@
-import { Activity, AlertOctagon, AlertTriangle, BellRing, CheckCircle, FileDown, Monitor, PlusCircle, RefreshCw, Sparkles, Thermometer, TrendingUp, Wifi, WifiOff, Wind } from "lucide-react";
+import { Activity, AlertOctagon, AlertTriangle, BellRing, CheckCircle, FileDown, Monitor, PlusCircle, RefreshCw, Sparkles, Thermometer, TrendingUp, Wifi, WifiOff, Wind, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -23,6 +23,8 @@ interface Summary {
   max_disk_temperature: number | null;
   average_fan_speed_rpm: number | null;
   average_fan_speed_percent: number | null;
+  open_tickets: number;
+  trends: Array<{ time: string; cpu: number | null; ram: number | null; disk: number | null }>;
 }
 
 export function DashboardPage() {
@@ -98,6 +100,7 @@ export function DashboardPage() {
               <MetricCard label="Warning Nodes" value={summary.warning_computers} icon={AlertTriangle} onClick={() => navigate("/predictions")} />
               <MetricCard label="Critical Nodes" value={summary.critical_computers} icon={AlertOctagon} onClick={() => navigate("/predictions")} />
               <MetricCard label="Active Alerts" value={summary.active_alerts} icon={BellRing} onClick={() => navigate("/alerts")} />
+              <MetricCard label="Open Tickets" value={summary.open_tickets} icon={Wrench} onClick={() => navigate("/tickets")} />
               {(summary.average_fan_speed_rpm != null || summary.average_fan_speed_percent != null) && (
                 <MetricCard
                   label="Avg Fan Speed"
@@ -156,14 +159,7 @@ export function DashboardPage() {
                 <span className="live-chip">Live Stream</span>
               </div>
               <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={[
-                  { time: "00:00", cpu: 42, ram: 57, disk: 68 },
-                  { time: "04:00", cpu: 38, ram: 61, disk: 69 },
-                  { time: "08:00", cpu: 64, ram: 73, disk: 71 },
-                  { time: "12:00", cpu: 58, ram: 70, disk: 72 },
-                  { time: "16:00", cpu: 76, ram: 81, disk: 74 },
-                  { time: "20:00", cpu: 49, ram: 66, disk: 74 }
-                ]}>
+                <AreaChart data={summary.trends.map((point) => ({ ...point, time: new Date(point.time).toLocaleTimeString() }))}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.18} />
                   <XAxis dataKey="time" tick={{ fontSize: 11, fill: "#94a3b8" }} />
                   <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: "#94a3b8" }} />

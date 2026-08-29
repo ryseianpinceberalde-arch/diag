@@ -18,7 +18,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$AgentVersion = '1.0.0'
+$AgentVersion = '1.1.0'
 $TaskName = 'PC Monitoring Agent'
 $InstallRoot = Join-Path $env:ProgramData 'PCMonitoringAgent'
 $ScriptPath = Join-Path $InstallRoot 'pc-monitoring-agent.ps1'
@@ -37,6 +37,70 @@ function Get-ApiUrl { if ([string]::IsNullOrWhiteSpace($ApiBaseUrl)) { Fail 'Api
 function Get-UtcNow { return [DateTime]::UtcNow.ToString('o') }
 function Get-CimSafe([string]$ClassName, [string]$Namespace = 'root/cimv2') { try { return @(Get-CimInstance -ClassName $ClassName -Namespace $Namespace -ErrorAction Stop) } catch { return @() } }
 function Hash-Text([string]$Text) { $sha = [Security.Cryptography.SHA256]::Create(); try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))).Replace('-', '').ToLowerInvariant()) } finally { $sha.Dispose() } }
+
+function Get-DeviceType([object[]]$ChassisTypes, [int]$PCSystemType = 0) {
+  $portable = @(8, 9, 10, 11, 12, 14, 18, 21, 30, 31, 32)
+  foreach ($item in $ChassisTypes) {
+    try { if ($portable -contains [int]$item) { return 'laptop' } } catch {}
+  }
+  if ($PCSystemType -in 2, 8) { return 'laptop' }
+  return 'desktop'
+}
+
+function Get-MemoryType([int]$Code) {
+  $types = @{ 20='DDR'; 21='DDR2'; 24='DDR3'; 26='DDR4'; 30='LPDDR4'; 34='DDR5'; 35='LPDDR5' }
+  if ($types.ContainsKey($Code)) { return $types[$Code] }
+  return $null
+}
+
+function Get-PowerPlan {
+  try {
+    $text = (& powercfg.exe /GetActiveScheme 2>$null | Out-String)
+    if ($text -match '\(([^)]+)\)') { return $matches[1].Trim() }
+  } catch {}
+  return $null
+}
+
+function Get-WifiDetails {
+  try {
+    $values = @{}
+    foreach ($line in (& netsh.exe wlan show interfaces 2>$null)) {
+      if ($line -match '^\s*([^:]+?)\s*:\s*(.*?)\s*$') { $values[$matches[1].Trim().ToLowerInvariant()] = $matches[2].Trim() }
+    }
+    if (-not $values.ContainsKey('name')) { return $null }
+    $signal = if ($values['signal'] -match '(\d+)') { [int]$matches[1] } else { $null }
+    return [ordered]@{ name=$values['name']; ssid=$values['ssid']; signal_percent=$signal; radio_type=$values['radio type']; channel=$values['channel'] }
+  } catch { return $null }
+}
+
+function Get-NetworkProbe {
+  try {
+    $requested = 2
+    $replies = @(Test-Connection -ComputerName '1.1.1.1' -Count $requested -ErrorAction SilentlyContinue)
+    $latencies = @($replies | ForEach-Object { if ($null -ne $_.ResponseTime) { [double]$_.ResponseTime } elseif ($null -ne $_.Latency) { [double]$_.Latency } })
+    $latency = if ($latencies.Count) { [Math]::Round(($latencies | Measure-Object -Average).Average, 2) } else { $null }
+    return [ordered]@{ internet_status=if ($replies.Count) { 'Reachable' } else { 'Unreachable' }; latency_ms=$latency; packet_loss_percent=[Math]::Round((($requested-$replies.Count)/$requested)*100, 2) }
+  } catch { return [ordered]@{ internet_status='Unknown'; latency_ms=$null; packet_loss_percent=$null } }
+}
+
+function Normalize-AdapterName([string]$Name) {
+  if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+  return ($Name.ToLowerInvariant() -replace '[^a-z0-9]', '')
+}
+
+function Get-NetworkRates {
+  try {
+    $samples = (Get-Counter -Counter @('\Network Interface(*)\Bytes Received/sec', '\Network Interface(*)\Bytes Sent/sec') -SampleInterval 1 -MaxSamples 1 -ErrorAction Stop).CounterSamples
+    $rates = @{}
+    foreach ($sample in $samples) {
+      $key = Normalize-AdapterName $sample.InstanceName
+      if (-not $rates.ContainsKey($key)) { $rates[$key] = [ordered]@{ received=$null; sent=$null } }
+      if ($sample.Path -match 'Bytes Received/sec') { $rates[$key].received = [double]$sample.CookedValue }
+      if ($sample.Path -match 'Bytes Sent/sec') { $rates[$key].sent = [double]$sample.CookedValue }
+    }
+    return $rates
+  } catch { return @{} }
+}
 
 function Get-DeviceId {
   if (Test-Path -LiteralPath $ConfigPath) {
@@ -82,25 +146,62 @@ function Get-Inventory {
   $os = Get-CimSafe 'Win32_OperatingSystem' | Select-Object -First 1
   $cs = Get-CimSafe 'Win32_ComputerSystem' | Select-Object -First 1
   $bios = Get-CimSafe 'Win32_BIOS' | Select-Object -First 1
+  $board = Get-CimSafe 'Win32_BaseBoard' | Select-Object -First 1
+  $enclosure = Get-CimSafe 'Win32_SystemEnclosure' | Select-Object -First 1
   $cpu = Get-CimSafe 'Win32_Processor' | Select-Object -First 1
+  $memoryModules = Get-CimSafe 'Win32_PhysicalMemory'
+  $memoryArray = Get-CimSafe 'Win32_PhysicalMemoryArray' | Select-Object -First 1
   $uptime = if ($os) { [int64](([DateTime]::UtcNow) - $os.LastBootUpTime.ToUniversalTime()).TotalSeconds } else { $null }
-  $cpuUsage = try { [Math]::Round((Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 1).CounterSamples[0].CookedValue, 2) } catch { $null }
+  $cpuUsage = try { [Math]::Round([Math]::Min(100, (Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 1).CounterSamples[0].CookedValue), 2) } catch { $null }
   $memory = if ($os) { [int64]$os.TotalVisibleMemorySize * 1024 } else { $null }
   $freeMemory = if ($os) { [int64]$os.FreePhysicalMemory * 1024 } else { $null }
-  $physicalDisks = Get-CimSafe 'Win32_DiskDrive'
+  $storagePhysical = Get-CimSafe 'MSFT_PhysicalDisk' 'root/Microsoft/Windows/Storage'
   $disks = foreach ($disk in (Get-CimSafe 'Win32_LogicalDisk' | Where-Object DriveType -eq 3)) {
-    $total = [int64]$disk.Size; $free = [int64]$disk.FreeSpace; $physical = $physicalDisks | Select-Object -First 1
-    [ordered]@{ drive_letter = $disk.DeviceID; filesystem = $disk.FileSystem; disk_model = if ($physical) { $physical.Model } else { $null }; total_bytes = $total; free_bytes = $free; used_bytes = $total - $free; usage_percent = if ($total) { [Math]::Round((($total-$free)/$total)*100,2) } else { $null }; health = if ($physical) { $physical.Status } else { $null } }
+    $total = if ($null -ne $disk.Size) { [int64]$disk.Size } else { $null }
+    $free = if ($null -ne $disk.FreeSpace) { [int64]$disk.FreeSpace } else { $null }
+    $partition = try { Get-CimAssociatedInstance -InputObject $disk -Association Win32_LogicalDiskToPartition -ErrorAction Stop | Select-Object -First 1 } catch { $null }
+    $physical = if ($partition) { try { Get-CimAssociatedInstance -InputObject $partition -Association Win32_DiskDriveToDiskPartition -ErrorAction Stop | Select-Object -First 1 } catch { $null } } else { $null }
+    $storageDisk = if ($physical) { $storagePhysical | Where-Object { [string]$_.DeviceId -eq [string]$physical.Index } | Select-Object -First 1 } else { $null }
+    $mediaType = if ($storageDisk -and [int]$storageDisk.BusType -eq 17) { 'NVMe SSD' } elseif ($storageDisk -and [int]$storageDisk.MediaType -eq 4) { 'SSD' } elseif ($storageDisk -and [int]$storageDisk.MediaType -eq 3) { 'HDD' } elseif ($physical.Model -match 'NVMe') { 'NVMe SSD' } elseif ($physical.Model -match 'SSD') { 'SSD' } else { $null }
+    $smart = if ($storageDisk) { switch ([int]$storageDisk.HealthStatus) { 0 {'Healthy'} 1 {'Warning'} 2 {'Unhealthy'} default {'Unknown'} } } elseif ($physical) { $physical.Status } else { $null }
+    [ordered]@{ drive_letter=$disk.DeviceID; volume_label=$disk.VolumeName; partition_label=if ($partition) { $partition.Name } else { $null }; filesystem=$disk.FileSystem; drive_type=$mediaType; disk_model=if ($physical) { $physical.Model } else { $null }; total_bytes=$total; free_bytes=$free; used_bytes=if ($null -ne $total -and $null -ne $free) { $total-$free } else { $null }; usage_percent=if ($total -and $null -ne $free) { [Math]::Round((($total-$free)/$total)*100,2) } else { $null }; smart_status=$smart; health=$smart }
   }
+  $wifi = Get-WifiDetails
+  $probe = Get-NetworkProbe
+  $rates = Get-NetworkRates
+  $networkAdapters = Get-CimSafe 'Win32_NetworkAdapter'
   $net = foreach ($adapter in (Get-CimSafe 'Win32_NetworkAdapterConfiguration' | Where-Object IPEnabled)) {
-    [ordered]@{ adapter = $adapter.Description; interface = $adapter.SettingID; ipv4 = @($adapter.IPAddress | Where-Object { $_ -match '^(\d{1,3}\.){3}\d{1,3}$' })[0]; mac_address = $adapter.MACAddress; link_speed = $null; default_gateway = @($adapter.DefaultIPGateway)[0]; status = 'Up' }
+    $hardwareAdapter = $networkAdapters | Where-Object Index -eq $adapter.Index | Select-Object -First 1
+    $rate = $rates[(Normalize-AdapterName $adapter.Description)]
+    $isWifi = ($adapter.Description -match 'wireless|wi-?fi|802\.11') -or ($hardwareAdapter.NetConnectionID -match 'wi-?fi|wireless')
+    $connectionType = if ($isWifi) { 'Wi-Fi' } elseif ($adapter.Description -match 'ethernet|gigabit') { 'Ethernet' } else { 'Unknown' }
+    $status = if (-not $hardwareAdapter -or [int]$hardwareAdapter.NetConnectionStatus -eq 2) { 'Connected' } else { 'Disconnected' }
+    [ordered]@{ adapter=$adapter.Description; interface=$hardwareAdapter.NetConnectionID; connection_type=$connectionType; status=$status; ssid=if ($isWifi -and $wifi) { $wifi.ssid } else { $null }; signal_percent=if ($isWifi -and $wifi) { $wifi.signal_percent } else { $null }; ipv4=@($adapter.IPAddress | Where-Object { $_ -match '^(\d{1,3}\.){3}\d{1,3}$' })[0]; ipv6=@($adapter.IPAddress | Where-Object { $_ -match ':' }); mac_address=$adapter.MACAddress; link_speed_bps=if ($hardwareAdapter) { $hardwareAdapter.Speed } else { $null }; default_gateway=@($adapter.DefaultIPGateway)[0]; dns_servers=@($adapter.DNSServerSearchOrder); internet_status=$probe.internet_status; latency_ms=$probe.latency_ms; packet_loss_percent=$probe.packet_loss_percent; download_mbps=if ($rate -and $null -ne $rate.received) { [Math]::Round(($rate.received*8)/1000000,3) } else { $null }; upload_mbps=if ($rate -and $null -ne $rate.sent) { [Math]::Round(($rate.sent*8)/1000000,3) } else { $null } }
   }
-  $gpu = foreach ($item in (Get-CimSafe 'Win32_VideoController')) { [ordered]@{ name = $item.Name; manufacturer = $item.AdapterCompatibility; driver_version = $item.DriverVersion; memory_bytes = $item.AdapterRAM } }
+  $gpu = foreach ($item in (Get-CimSafe 'Win32_VideoController')) { [ordered]@{ name=$item.Name; manufacturer=$item.AdapterCompatibility; driver_version=$item.DriverVersion; memory_bytes=$item.AdapterRAM; temperature_c=$null } }
   $battery = Get-CimSafe 'Win32_Battery' | Select-Object -First 1
-  $batteryData = if ($battery) { [ordered]@{ percentage = $battery.EstimatedChargeRemaining; charging = ($battery.BatteryStatus -in 2,6,7,8,9); status = $battery.Status } } else { $null }
-  $processes = foreach ($p in (Get-Process | ForEach-Object { try { [ordered]@{ process = $_; cpu_seconds = [double]$_.CPU } } catch {} } | Sort-Object cpu_seconds -Descending | Select-Object -First 15)) { try { [ordered]@{ name = $p.process.ProcessName; pid = $p.process.Id; cpu_seconds = $p.cpu_seconds; ram_bytes = $p.process.WorkingSet64; ram_usage_percent = if ($memory) { [Math]::Round(($p.process.WorkingSet64/$memory)*100,2) } else { $null } } } catch {} }
-  $system = [ordered]@{ device_id = Get-DeviceId; computer_name = $env:COMPUTERNAME; manufacturer = $cs.Manufacturer; model = $cs.Model; serial_number = $bios.SerialNumber; windows_version = $os.Caption; windows_build = $os.BuildNumber; architecture = $os.OSArchitecture; last_boot_time = if ($os) { $os.LastBootUpTime.ToUniversalTime().ToString('o') } else { $null }; uptime_seconds = $uptime }
-  return [ordered]@{ device_id = $system.device_id; agent_version = $AgentVersion; timestamp = Get-UtcNow; last_heartbeat = Get-UtcNow; agent_status = 'running'; system = $system; cpu = [ordered]@{ model = $cpu.Name; manufacturer = $cpu.Manufacturer; physical_cores = $cpu.NumberOfCores; logical_processors = $cpu.NumberOfLogicalProcessors; usage_percent = $cpuUsage; max_clock_speed_mhz = $cpu.MaxClockSpeed; current_clock_speed_mhz = $cpu.CurrentClockSpeed }; memory = [ordered]@{ total_bytes = $memory; used_bytes = if ($memory -and $freeMemory) { $memory-$freeMemory } else { $null }; available_bytes = $freeMemory; usage_percent = if ($memory -and $freeMemory) { [Math]::Round((($memory-$freeMemory)/$memory)*100,2) } else { $null } }; storage = @($disks); network = @($net); gpu = @($gpu); battery = $batteryData; temperature = [ordered]@{ available = $false; temperatureC = $null }; processes = @($processes); hardware_health = [ordered]@{ smart = $null; temperatures = $null } }
+  $staticBattery = Get-CimSafe 'BatteryStaticData' 'root/wmi' | Select-Object -First 1
+  $fullBattery = Get-CimSafe 'BatteryFullChargedCapacity' 'root/wmi' | Select-Object -First 1
+  $powerPlan = Get-PowerPlan
+  $batteryData = if ($battery) {
+    $health = if ($staticBattery.DesignedCapacity -and $fullBattery.FullChargedCapacity) { [Math]::Round(($fullBattery.FullChargedCapacity/$staticBattery.DesignedCapacity)*100, 1) } else { $null }
+    [ordered]@{ percentage=$battery.EstimatedChargeRemaining; charging=([int]$battery.BatteryStatus -in 2,6,7,8,9); status=$battery.Status; power_source=if ([int]$battery.BatteryStatus -in 2,3,6,7,8,9) { 'AC Adapter' } else { 'Battery' }; health_percent=$health; health_status=if ($null -eq $health) { $null } elseif ($health -ge 80) { 'Good' } elseif ($health -ge 60) { 'Fair' } else { 'Poor' }; power_plan=$powerPlan }
+  } else { $null }
+  $thermalZones = @(Get-CimSafe 'MSAcpi_ThermalZoneTemperature' 'root/wmi' | ForEach-Object { if ($_.CurrentTemperature) { ($_.CurrentTemperature/10)-273.15 } } | Where-Object { $_ -ge 1 -and $_ -le 120 })
+  $cpuTemperature = if ($thermalZones.Count) { [Math]::Round(($thermalZones | Measure-Object -Maximum).Maximum, 1) } else { $null }
+  $fan = Get-CimSafe 'Win32_Fan' | Select-Object -First 1
+  $temperatureData = [ordered]@{ available=($null -ne $cpuTemperature); temperatureC=$cpuTemperature; cpu_temperature_c=$cpuTemperature; gpu_temperature_c=$null; thermal_health=if ($null -eq $cpuTemperature) { 'Unavailable' } elseif ($cpuTemperature -ge 90) { 'Critical' } elseif ($cpuTemperature -ge 80) { 'Warning' } elseif ($cpuTemperature -ge 70) { 'Warm' } else { 'Normal' }; fan_status=if ($fan) { $fan.Status } else { $null }; fan_speed_rpm=if ($fan -and $fan.DesiredSpeed) { [double]$fan.DesiredSpeed } else { $null }; fan_speed_percent=$null }
+  $logicalCount = if ($cpu.NumberOfLogicalProcessors) { [double]$cpu.NumberOfLogicalProcessors } else { 1 }
+  $processes = foreach ($p in (Get-CimSafe 'Win32_PerfFormattedData_PerfProc_Process' | Where-Object { $_.IDProcess -gt 0 -and $_.Name -notin @('_Total','Idle') } | Sort-Object @{Expression={[double]$_.PercentProcessorTime};Descending=$true}, @{Expression={[double]$_.WorkingSetPrivate};Descending=$true} | Select-Object -First 25)) { [ordered]@{ name=$p.Name; pid=[int]$p.IDProcess; cpu_percent=[Math]::Round([Math]::Min(100, ([double]$p.PercentProcessorTime/$logicalCount)), 2); ram_bytes=[int64]$p.WorkingSetPrivate; ram_usage_percent=if ($memory) { [Math]::Round(([double]$p.WorkingSetPrivate/$memory)*100,2) } else { $null }; status='Running' } }
+  $deviceType = Get-DeviceType -ChassisTypes @($enclosure.ChassisTypes) -PCSystemType ([int]$cs.PCSystemType)
+  $memoryType = @($memoryModules | ForEach-Object { Get-MemoryType ([int]$_.SMBIOSMemoryType) } | Where-Object { $_ } | Select-Object -Unique) -join ', '
+  $system = [ordered]@{ device_id=Get-DeviceId; computer_name=$env:COMPUTERNAME; manufacturer=$cs.Manufacturer; model=$cs.Model; device_type=$deviceType; serial_number=$bios.SerialNumber; motherboard=if ($board) { "$($board.Manufacturer) $($board.Product)".Trim() } else { $null }; bios_version=if ($bios) { @($bios.BIOSVersion) -join ' ' } else { $null }; bios_release_date=if ($bios.ReleaseDate) { $bios.ReleaseDate.ToUniversalTime().ToString('o') } else { $null }; windows_version=$os.Caption; windows_build=$os.BuildNumber; os_version=$os.Version; architecture=$os.OSArchitecture; installation_date=if ($os.InstallDate) { $os.InstallDate.ToUniversalTime().ToString('o') } else { $null }; last_boot_time=if ($os) { $os.LastBootUpTime.ToUniversalTime().ToString('o') } else { $null }; uptime_seconds=$uptime; power_plan=$powerPlan }
+  $memoryData = [ordered]@{ total_bytes=$memory; used_bytes=if ($memory -and $null -ne $freeMemory) { $memory-$freeMemory } else { $null }; available_bytes=$freeMemory; usage_percent=if ($memory -and $null -ne $freeMemory) { [Math]::Round((($memory-$freeMemory)/$memory)*100,2) } else { $null }; type=if ($memoryType) { $memoryType } else { $null }; speed_mhz=if ($memoryModules) { ($memoryModules | Measure-Object -Property Speed -Maximum).Maximum } else { $null }; slots_used=@($memoryModules).Count; slots_total=if ($memoryArray.MemoryDevices) { [int]$memoryArray.MemoryDevices } else { $null }; modules=@($memoryModules | ForEach-Object { [ordered]@{ manufacturer=$_.Manufacturer; part_number=([string]$_.PartNumber).Trim(); capacity_bytes=$_.Capacity; speed_mhz=$_.Speed; type=Get-MemoryType ([int]$_.SMBIOSMemoryType) } }) }
+  $capabilities = @('cpu','memory','storage','network','processes','hardware')
+  if ($batteryData) { $capabilities += 'battery' }
+  if ($temperatureData.available) { $capabilities += 'temperature' }
+  if ($temperatureData.fan_status) { $capabilities += 'fan' }
+  return [ordered]@{ device_id=$system.device_id; agent_version=$AgentVersion; timestamp=Get-UtcNow; last_heartbeat=Get-UtcNow; agent_status='running'; capabilities=$capabilities; system=$system; cpu=[ordered]@{ model=$cpu.Name; manufacturer=$cpu.Manufacturer; physical_cores=$cpu.NumberOfCores; logical_processors=$cpu.NumberOfLogicalProcessors; usage_percent=$cpuUsage; max_clock_speed_mhz=$cpu.MaxClockSpeed; current_clock_speed_mhz=$cpu.CurrentClockSpeed }; memory=$memoryData; storage=@($disks); network=@($net); gpu=@($gpu); battery=$batteryData; temperature=$temperatureData; processes=@($processes); hardware_health=[ordered]@{ smart=@($disks | ForEach-Object { $_.smart_status }); temperatures=if ($temperatureData.available) { $temperatureData.thermal_health } else { $null } } }
 }
 
 function Register-Agent {

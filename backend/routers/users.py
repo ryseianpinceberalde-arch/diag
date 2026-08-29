@@ -5,6 +5,7 @@ from supabase import Client
 from dependencies import admin_client, require_role
 
 router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(require_role("administrator"))])
+VALID_ROLES = {"super_admin", "it_admin", "administrator", "technician", "department_user", "viewer"}
 
 
 class UserCreate(BaseModel):
@@ -35,7 +36,7 @@ def list_users(client: Client = Depends(admin_client)) -> dict:
 
 @router.post("")
 def create_user(payload: UserCreate, actor: dict = Depends(require_role("administrator")), client: Client = Depends(admin_client)) -> dict:
-    if payload.role not in {"administrator", "technician", "viewer"}:
+    if payload.role not in VALID_ROLES:
         raise HTTPException(status_code=422, detail="Invalid role")
     created = client.auth.admin.create_user(
         {
@@ -62,7 +63,7 @@ def create_user(payload: UserCreate, actor: dict = Depends(require_role("adminis
 @router.patch("/{user_id}")
 def update_user(user_id: str, payload: UserUpdate, actor: dict = Depends(require_role("administrator")), client: Client = Depends(admin_client)) -> dict:
     row = payload.model_dump(exclude_none=True)
-    if "role" in row and row["role"] not in {"administrator", "technician", "viewer"}:
+    if "role" in row and row["role"] not in VALID_ROLES:
         raise HTTPException(status_code=422, detail="Invalid role")
     updated = client.table("profiles").update(row).eq("id", user_id).execute().data
     client.table("audit_logs").insert({"actor_id": actor["id"], "action": "users.update", "target_id": user_id, "metadata": row}).execute()

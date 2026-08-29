@@ -47,8 +47,8 @@ export function Header({ onSignOut, onOpenMenu }: { onSignOut: () => void; onOpe
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [systemStatus, setSystemStatus] = useState<"healthy" | "warning" | "critical">("healthy");
-  const page = location.pathname.startsWith("/computers/")
-    ? { title: "Computer Diagnostic Details", subtitle: "Sensor telemetry, component timeline and analysis" }
+  const page = location.pathname.startsWith("/computers/") || location.pathname.startsWith("/devices/")
+    ? { title: "Device Details & Live Monitoring", subtitle: "Telemetry, hardware, diagnostics, repair and maintenance workflow" }
     : titles[location.pathname] ?? titles["/"];
 
   function search(event: KeyboardEvent<HTMLInputElement>) {

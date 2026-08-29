@@ -4,14 +4,19 @@ import { Session } from "@supabase/supabase-js";
 import { Layout } from "./components/Layout";
 import { supabase } from "./lib/supabase";
 import { AlertsPage } from "./pages/AlertsPage";
+import { AgentManagementPage } from "./pages/AgentManagementPage";
+import { AuditLogsPage } from "./pages/AuditLogsPage";
 import { ComputerDetailsPage } from "./pages/ComputerDetailsPage";
 import { ComputersPage } from "./pages/ComputersPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LiveMonitoringPage } from "./pages/LiveMonitoringPage";
 import { MaintenancePage } from "./pages/MaintenancePage";
+import { OrganizationPage } from "./pages/OrganizationPage";
 import { PredictionsPage } from "./pages/PredictionsPage";
 import { ReportsPage } from "./pages/ReportsPage";
+import { RepairTicketsPage } from "./pages/RepairTicketsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsersPage } from "./pages/UsersPage";
 
@@ -46,11 +51,17 @@ export default function App() {
         <Route index element={<DashboardPage />} />
         <Route path="computers" element={<ComputersPage />} />
         <Route path="computers/:computerId" element={<ComputerDetailsPage />} />
+        <Route path="devices/:computerId" element={<ComputerDetailsPage />} />
         <Route path="live-monitoring" element={<LiveMonitoringPage />} />
+        <Route path="diagnostics" element={<DiagnosticsPage />} />
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="predictions" element={<PredictionsPage />} />
+        <Route path="tickets" element={<RepairTicketsPage />} />
         <Route path="maintenance" element={<MaintenancePage />} />
+        <Route path="organization" element={<OrganizationPage />} />
+        <Route path="agents" element={<AgentManagementPage />} />
         <Route path="reports" element={<ReportsPage />} />
+        <Route path="audit-logs" element={<AuditLogsPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

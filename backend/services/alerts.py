@@ -6,6 +6,8 @@ from supabase import Client
 from services.health import evaluate_computer_health
 from services.prediction import analyze_computer
 from services.settings import load_thresholds
+from services.diagnostics import sync_diagnostic_findings
+from services.notifications import upsert_alert_notification
 
 
 def now_iso() -> str:
@@ -16,6 +18,7 @@ def upsert_health_alerts(client: Client, computer: dict[str, Any], latest_readin
     thresholds = load_thresholds(client)
     health = evaluate_computer_health(computer, latest_reading, thresholds)
     issue_keys = {issue["alert_key"] for issue in health["issues"]}
+    alert_ids: dict[str, str | None] = {}
 
     for issue in health["issues"]:
         existing = (
@@ -53,8 +56,13 @@ def upsert_health_alerts(client: Client, computer: dict[str, Any], latest_readin
             payload["occurrence_count"] = 1
             inserted = client.table("alerts").insert(payload).execute().data or []
             alert_id = inserted[0].get("id") if inserted else None
+        alert_ids[issue["alert_key"]] = alert_id
+        if issue["severity"] == "critical":
+            upsert_alert_notification(client, computer["id"], alert_id, issue)
         if issue["severity"] in {"high", "critical"}:
             upsert_maintenance_ticket(client, computer["id"], issue, alert_id)
+
+    sync_diagnostic_findings(client, computer, health["issues"], alert_ids)
 
     active = (
         client.table("alerts")

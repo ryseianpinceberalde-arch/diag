@@ -14,6 +14,7 @@ from schemas.models import AgentHeartbeat, AgentRegistration, AgentTelemetry
 router = APIRouter(tags=["agents"])
 logger = logging.getLogger("pc_sentinel.agents")
 AGENT_SCRIPT = Path(__file__).resolve().parents[2] / "agents" / "windows" / "pc-monitoring-agent.ps1"
+AGENT_LATEST_VERSION = "1.1.0"
 
 
 class CommandComplete(BaseModel):
@@ -23,9 +24,9 @@ class CommandComplete(BaseModel):
 
 
 @router.post("/registration-codes", dependencies=[Depends(require_admin)])
-def create_registration_code(client: Client = Depends(admin_client)) -> dict:
+def create_registration_code(user: dict = Depends(require_admin), client: Client = Depends(admin_client)) -> dict:
     code = secrets.token_urlsafe(12)
-    row = {"code_hash": hashlib.sha256(code.encode("utf-8")).hexdigest(), "status": "active", "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()}
+    row = {"code_hash": hashlib.sha256(code.encode("utf-8")).hexdigest(), "status": "active", "created_by": user["id"], "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()}
     result = client.table("registration_codes").insert(row).execute().data
     return {"code": code, "registration_code": result[0] if result else row}
 
@@ -59,17 +60,20 @@ def register_agent(
         if not payload.registration_code:
             raise HTTPException(status_code=422, detail="registration_code is required")
         code_hash = hashlib.sha256(payload.registration_code.encode("utf-8")).hexdigest()
-        codes = client.table("registration_codes").select("id,expires_at,status").eq("code_hash", code_hash).eq("status", "active").limit(1).execute().data or []
+        codes = client.table("registration_codes").select("id,expires_at,status,device_id").eq("code_hash", code_hash).eq("status", "active").limit(1).execute().data or []
         if not codes:
             raise HTTPException(status_code=401, detail="Invalid or expired registration code")
         expires_at = codes[0].get("expires_at")
         if expires_at and datetime.fromisoformat(expires_at.replace("Z", "+00:00")) <= datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Invalid or expired registration code")
+        if codes[0].get("device_id") and codes[0]["device_id"] != payload.device_id:
+            raise HTTPException(status_code=401, detail="Registration code is assigned to another device")
         code_row = codes[0]
     token = secrets.token_urlsafe(32)
     row = payload.model_dump(mode="json")
     row.pop("registration_code", None)
     row["status"] = "online"
+    row["agent_status"] = "online"
     row["last_seen"] = datetime.now(timezone.utc).isoformat()
     row["agent_token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
     result = client.table("computers").upsert(row, on_conflict="device_id").execute().data
@@ -85,8 +89,8 @@ def register_agent(
         "deviceId": payload.device_id,
         "token": token,
         "deviceToken": token,
-        "heartbeat_interval": 10,
-        "heartbeatIntervalSec": 10,
+        "heartbeat_interval": settings.agent_heartbeat_interval_seconds,
+        "heartbeatIntervalSec": settings.agent_heartbeat_interval_seconds,
     }
 
 
@@ -105,22 +109,47 @@ def _ingest_telemetry(
             raise HTTPException(status_code=403, detail="Credential does not belong to this device")
     now = (payload.last_heartbeat or payload.timestamp or datetime.now(timezone.utc)).isoformat()
     system, cpu, memory = payload.system, payload.cpu, payload.memory
+    connected_network = next(
+        (
+            item
+            for item in payload.network
+            if str(item.get("status") or "").lower() in {"up", "connected"} and item.get("ipv4")
+        ),
+        payload.network[0] if payload.network else {},
+    )
+    disk_health = next(
+        (
+            item.get("smart_status") or item.get("health")
+            for item in payload.storage
+            if str(item.get("smart_status") or item.get("health") or "").lower()
+            in {"warning", "unhealthy", "bad", "fail", "failed", "critical"}
+        ),
+        next((item.get("smart_status") or item.get("health") for item in payload.storage if item.get("smart_status") or item.get("health")), None),
+    )
+    temperature = payload.temperature or {}
     row = {
         "computer_id": computers[0]["id"], "cpu_usage": cpu.get("usage_percent"),
         "ram_usage": memory.get("usage_percent"),
         "disk_usage": max((item.get("usage_percent") for item in payload.storage if item.get("usage_percent") is not None), default=None),
-        "battery_percentage": (payload.battery or {}).get("percentage"), "uptime_seconds": system.get("uptime_seconds"),
-        "cpu_temperature": payload.temperature.get("temperatureC") if payload.temperature.get("available") else None,
+        "disk_health": disk_health,
+        "battery_percentage": (payload.battery or {}).get("percentage"),
+        "battery_health": (payload.battery or {}).get("health_percent"),
+        "network_latency": connected_network.get("latency_ms"),
+        "packet_loss": connected_network.get("packet_loss_percent"),
+        "uptime_seconds": system.get("uptime_seconds"),
+        "cpu_temperature": temperature.get("temperatureC") if temperature.get("available") else None,
         "recorded_at": now,
     }
     inserted = client.table("diagnostic_readings").insert(row).execute().data
     client.table("computers").update({
-        "status": "online", "last_seen": now, "agent_version": payload.agent_version,
+        "status": "online", "agent_status": "online", "last_seen": now, "last_heartbeat": now,
+        "agent_version": payload.agent_version, "capabilities": payload.capabilities or ["cpu", "memory", "storage", "network"],
         "computer_name": system.get("computer_name"), "manufacturer": system.get("manufacturer"),
         "model": system.get("model"), "operating_system": system.get("windows_version"),
-        "ip_address": payload.network[0].get("ipv4") if payload.network else None,
+        "ip_address": connected_network.get("ipv4"),
         "serial_number": system.get("serial_number"), "windows_build": system.get("windows_build"),
         "architecture": system.get("architecture"), "agent_inventory": payload.model_dump(mode="json"),
+        **({"device_type": system.get("device_type")} if system.get("device_type") else {}),
     }).eq("id", computers[0]["id"]).execute()
     return {"success": True, "last_heartbeat": now, "reading": inserted[0] if inserted else row}
 
@@ -133,6 +162,11 @@ def heartbeat(payload: AgentHeartbeat, authorization: str | None = Header(defaul
 @router.post("/telemetry", dependencies=[Depends(require_agent_credential)])
 def telemetry(payload: AgentTelemetry, authorization: str | None = Header(default=None), client: Client = Depends(admin_client)) -> dict:
     return _ingest_telemetry(payload, authorization, client)
+
+
+@router.get("/version")
+def agent_version() -> dict[str, str]:
+    return {"latestVersion": AGENT_LATEST_VERSION, "minimumSupportedVersion": "1.0.0"}
 
 
 @router.post("/{computer_id}/regenerate-token", dependencies=[Depends(require_admin)])

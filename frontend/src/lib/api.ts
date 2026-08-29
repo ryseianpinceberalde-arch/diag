@@ -1,6 +1,6 @@
 import { supabase } from "./supabase";
 
-const API_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+export const API_BASE_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const { data } = await supabase.auth.getSession();
@@ -10,7 +10,12 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  const response = await fetch(`${API_URL}/api${path}`, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api${path}`, { ...options, headers });
+  } catch {
+    throw new Error(`Unable to reach the API at ${API_BASE_URL}. Check that the backend is running and that VITE_API_URL is correct.`);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "Request failed" }));
     throw new Error(body.detail ?? "Request failed");
@@ -25,7 +30,7 @@ export async function apiDownload(path: string): Promise<Blob> {
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  const response = await fetch(`${API_URL}/api${path}`, { headers });
+  const response = await fetch(`${API_BASE_URL}/api${path}`, { headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "Request failed" }));
     throw new Error(body.detail ?? "Request failed");

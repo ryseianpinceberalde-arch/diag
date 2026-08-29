@@ -32,6 +32,7 @@ tests/                   Shared test area
 1. Create a Supabase project.
 2. Copy the project URL, anon key, and service-role key.
 3. Run the SQL migration in `supabase/migrations/202608220001_diagnostic_schema.sql` using the Supabase SQL editor or CLI.
+   Apply the later migration files in timestamp order as well; they add GPU/fan metrics, operations settings, the Windows agent contract, asset metadata, diagnostic findings, repair tickets, maintenance records, and notifications.
 4. Create an administrator user in Supabase Authentication.
 5. Insert a matching profile row for that user:
 
@@ -145,6 +146,8 @@ npm run dev
 
 Open `http://localhost:5173` and sign in with the Supabase administrator account.
 
+Open a device from Computer Inventory or browse directly to `http://localhost:5173/devices/DEVICE_UUID`. The advanced page polls the latest telemetry every 15 seconds and loads diagnostics, repair tickets, and maintenance records for that device.
+
 ## Run Windows Monitoring Agent
 
 Open a separate elevated PowerShell window when you want WMI and Windows Event Viewer access:
@@ -206,11 +209,26 @@ Set-Location ..
 - `GET /api/dashboard/summary`
 - `GET /api/computers`
 - `GET /api/computers/{computer_id}`
+- `DELETE /api/computers/{computer_id}` (administrator only)
 - `GET /api/computers/{computer_id}/history`
 - `GET /api/computers/{computer_id}/predictions`
 - `GET /api/alerts`
 - `PATCH /api/alerts/{alert_id}/acknowledge`
 - `PATCH /api/alerts/{alert_id}/resolve`
+- `GET /api/diagnostics`
+- `PATCH /api/diagnostics/{finding_id}`
+- `POST /api/diagnostics/{finding_id}/ticket`
+- `GET /api/tickets`
+- `POST /api/tickets`
+- `PATCH /api/tickets/{ticket_id}`
+- `GET /api/maintenance/records`
+- `POST /api/maintenance/records`
+- `PATCH /api/maintenance/records/{record_id}`
+- `GET /api/departments`
+- `POST /api/departments`
+- `GET /api/locations`
+- `POST /api/locations`
+- `GET /api/audit-logs`
 - `POST /api/computers/{computer_id}/analyze`
 - `GET /api/installer/command`
 - `GET /api/installer/install.ps1`

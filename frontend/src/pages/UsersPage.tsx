@@ -3,7 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { Profile } from "../types/models";
 
-const roles = ["administrator", "technician", "viewer"] as const;
+const roles = ["super_admin", "it_admin", "administrator", "technician", "department_user", "viewer"] as const;
 
 export function UsersPage() {
   const [users, setUsers] = useState<Profile[]>([]);
