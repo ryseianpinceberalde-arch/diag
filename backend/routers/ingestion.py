@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from supabase import Client
 from dependencies import admin_client, require_agent_api_key
@@ -6,6 +7,7 @@ from schemas.models import DiagnosticReadingIn, SystemEventIn
 from services.alerts import upsert_health_alerts, upsert_prediction_alerts
 
 router = APIRouter(tags=["ingestion"], dependencies=[Depends(require_agent_api_key)])
+logger = logging.getLogger("pc_sentinel.ingestion")
 
 
 def find_computer_id(client: Client, device_id: str) -> str:
@@ -20,11 +22,21 @@ def create_reading(payload: DiagnosticReadingIn, client: Client = Depends(admin_
     computer_id = find_computer_id(client, payload.device_id)
     row = payload.model_dump(exclude={"device_id"}, exclude_none=False, mode="json")
     row["computer_id"] = computer_id
-    row["recorded_at"] = row["recorded_at"] or datetime.now(timezone.utc).isoformat()
+    seen_at = row["recorded_at"] or datetime.now(timezone.utc).isoformat()
+    row["recorded_at"] = seen_at
     inserted = client.table("diagnostic_readings").insert(row).execute().data
+    client.table("computers").update({"status": "online", "last_seen": seen_at}).eq("id", computer_id).execute()
     computer = client.table("computers").select("*").eq("id", computer_id).single().execute().data
-    health = upsert_health_alerts(client, computer, inserted[0] if inserted else row)
-    prediction = upsert_prediction_alerts(client, computer_id)
+    try:
+        health = upsert_health_alerts(client, computer, inserted[0] if inserted else row)
+    except Exception:
+        logger.exception("Health alert update failed for computer_id=%s", computer_id)
+        health = {"status": "online", "issues": [], "latest_reading": inserted[0] if inserted else row}
+    try:
+        prediction = upsert_prediction_alerts(client, computer_id)
+    except Exception:
+        logger.exception("Prediction alert update failed for computer_id=%s", computer_id)
+        prediction = None
     return {"reading": inserted[0] if inserted else row, "health": health, "prediction": prediction}
 
 

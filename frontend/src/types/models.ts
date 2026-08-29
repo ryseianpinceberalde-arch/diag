@@ -68,6 +68,17 @@ export interface Computer {
   health_issues?: Array<{ title: string; description: string; severity: string; component: string }>;
   tags?: string[];
   notes?: string | null;
+  agent_inventory?: {
+    system?: Record<string, unknown>;
+    cpu?: Record<string, unknown>;
+    memory?: Record<string, unknown>;
+    storage?: Array<Record<string, unknown>>;
+    network?: Array<Record<string, unknown>>;
+    gpu?: Array<Record<string, unknown>>;
+    battery?: Record<string, unknown>;
+    processes?: Array<Record<string, unknown>>;
+    hardware_health?: Record<string, unknown>;
+  };
 }
 
 export interface AppSettings {

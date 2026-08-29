@@ -3,6 +3,7 @@ from supabase import Client
 from dependencies import admin_client, require_admin
 from services.health import evaluate_computer_health
 from services.settings import load_thresholds
+from services.status import effective_status
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_admin)])
 
@@ -30,11 +31,12 @@ def dashboard_summary(client: Client = Depends(admin_client)) -> dict:
         for computer in computers
     ]
     health_levels = [result["status"] for result in health_results]
+    connection_statuses = [effective_status(computer, offline_after_seconds=thresholds.offline_after_seconds) for computer in computers]
     system_status = "critical" if any(level in {"critical", "offline"} for level in health_levels) else "warning" if any(level == "warning" for level in health_levels) else "healthy"
     return {
         "total_computers": len(computers),
-        "online_computers": sum(1 for level in health_levels if level != "offline"),
-        "offline_computers": sum(1 for level in health_levels if level == "offline"),
+        "online_computers": sum(1 for status in connection_statuses if status == "online"),
+        "offline_computers": sum(1 for status in connection_statuses if status == "offline"),
         "healthy_computers": sum(1 for level in health_levels if level == "healthy"),
         "warning_computers": sum(1 for level in health_levels if level == "warning"),
         "critical_computers": sum(1 for level in health_levels if level == "critical"),

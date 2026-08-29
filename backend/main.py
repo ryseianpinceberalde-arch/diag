@@ -1,4 +1,6 @@
 import logging
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
@@ -9,7 +11,31 @@ from routers import agents, alerts, computers, dashboard, health, ingestion, ins
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app_settings = get_settings()
-app = FastAPI(title="Computer Diagnostic API", version="0.1.0")
+
+
+async def _offline_sweep() -> None:
+    from database import get_supabase_admin
+    from services.offline import mark_stale_computers
+    while True:
+        try:
+            await asyncio.to_thread(mark_stale_computers, get_supabase_admin())
+        except Exception:
+            logging.getLogger("pc_sentinel.offline").exception("Offline sweep failed")
+        await asyncio.sleep(10)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task = asyncio.create_task(_offline_sweep())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+app = FastAPI(title="Computer Diagnostic API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,11 +48,15 @@ install_error_handlers(app)
 app.middleware("http")(agent_rate_limit)
 
 app.include_router(health.router, prefix="/api")
-app.include_router(agents.router, prefix="/api")
+app.include_router(agents.router, prefix="/api/agents")
+# The existing plural routes remain supported; the singular path is the
+# documented Windows-agent contract and points at the same handlers.
+app.include_router(agents.router, prefix="/api/agent")
 app.include_router(ingestion.router, prefix="/api")
 app.include_router(installer.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
-app.include_router(computers.router, prefix="/api")
+app.include_router(computers.router, prefix="/api/computers")
+app.include_router(computers.router, prefix="/api/devices")
 app.include_router(alerts.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")

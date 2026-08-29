@@ -1,3 +1,4 @@
+import hashlib
 from fastapi import Depends, Header, HTTPException, status
 from supabase import Client
 from config import Settings, get_settings
@@ -9,6 +10,23 @@ def require_agent_api_key(
     settings: Settings = Depends(get_settings),
 ) -> None:
     if not x_agent_api_key or x_agent_api_key != settings.agent_api_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent credentials")
+
+
+def require_agent_credential(
+    x_agent_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+    admin: Client = Depends(get_supabase_admin),
+) -> None:
+    if x_agent_api_key and x_agent_api_key == settings.agent_api_key:
+        return
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent credentials")
+    token = authorization.split(" ", 1)[1].strip()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    rows = admin.table("computers").select("id").eq("agent_token_hash", token_hash).limit(1).execute().data or []
+    if not rows:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent credentials")
 
 

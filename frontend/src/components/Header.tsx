@@ -71,7 +71,7 @@ export function Header({ onSignOut, onOpenMenu }: { onSignOut: () => void; onOpe
     };
   }, [location.pathname]);
 
-  const statusText = systemStatus === "healthy" ? "All Systems Operational" : systemStatus === "warning" ? "Systems Need Attention" : "Critical or Offline Systems";
+  const statusText = systemStatus === "healthy" ? "All Systems Operational" : systemStatus === "warning" ? "Systems Need Attention" : "Critical Systems Need Attention";
 
   return (
     <header className="topbar">

@@ -1,6 +1,7 @@
 import { Clipboard, PlusCircle, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
+import { supabase } from "../lib/supabase";
 
 function plainPowerShellCommand(command: string) {
   return command.replace(/\[(https?:\/\/[^\]]+)\]\(https?:\/\/[^\)]+\)/g, "$1");
@@ -12,6 +13,7 @@ export function AddComputerModal({ open, onClose }: { open: boolean; onClose: ()
   const [installError, setInstallError] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [loadingCommand, setLoadingCommand] = useState(false);
+  const [downloadingAgent, setDownloadingAgent] = useState(false);
   const installCommand = plainPowerShellCommand(onlineInstallCommand);
 
   function loadCommand() {
@@ -40,6 +42,30 @@ export function AddComputerModal({ open, onClose }: { open: boolean; onClose: ()
     window.setTimeout(() => setCopied(null), 1800);
   }
 
+  async function downloadPowerShellAgent() {
+    setDownloadingAgent(true);
+    setInstallError("");
+    try {
+      const code = await apiFetch<{ code: string }>("/agents/registration-codes", { method: "POST" });
+      const apiBaseUrl = (import.meta.env.VITE_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+      const response = await fetch(`${apiBaseUrl}/api/agent/download/powershell?api_base_url=${encodeURIComponent(apiBaseUrl)}&registration_code=${encodeURIComponent(code.code)}`, {
+        headers: { Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token ?? ""}` }
+      });
+      if (!response.ok) throw new Error("Failed to download PowerShell agent");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "pc-monitoring-agent.ps1";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : "Failed to download PowerShell agent");
+    } finally {
+      setDownloadingAgent(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <section className="modal" role="dialog" aria-modal="true" aria-labelledby="add-computer-title" onClick={(event) => event.stopPropagation()}>
@@ -64,6 +90,9 @@ export function AddComputerModal({ open, onClose }: { open: boolean; onClose: ()
             </button>
             <button className="secondary" onClick={loadCommand} disabled={loadingCommand}>
               <RefreshCw size={15} /> {loadingCommand ? "Generating" : "Generate New Command"}
+            </button>
+            <button className="secondary" onClick={downloadPowerShellAgent} disabled={downloadingAgent}>
+              {downloadingAgent ? "Downloading" : "Download PowerShell Agent"}
             </button>
             {installError ? <p className="error">{installError}</p> : null}
             <details className="command-details">

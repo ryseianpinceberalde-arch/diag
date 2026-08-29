@@ -8,8 +8,8 @@ from supabase import Client
 
 @dataclass(frozen=True)
 class Thresholds:
-    offline_after_seconds: int = 300
-    agent_reporting_interval_seconds: int = 60
+    offline_after_seconds: int = 120
+    agent_reporting_interval_seconds: int = 10
     disk_warning_percent: float = 85
     disk_critical_percent: float = 95
     ram_warning_percent: float = 85
@@ -106,8 +106,8 @@ def validate_threshold_update(values: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{warning_key} must be lower than {critical_key}")
     if merged["offline_after_seconds"] < 60:
         raise ValueError("offline_after_seconds must be at least 60")
-    if merged["agent_reporting_interval_seconds"] < 15:
-        raise ValueError("agent_reporting_interval_seconds must be at least 15")
+    if merged["agent_reporting_interval_seconds"] < 10:
+        raise ValueError("agent_reporting_interval_seconds must be at least 10")
     if merged["alert_recovery_readings"] < 1:
         raise ValueError("alert_recovery_readings must be at least 1")
     return clean

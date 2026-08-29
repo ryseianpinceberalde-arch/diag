@@ -215,8 +215,25 @@ Set-Location ..
 - `GET /api/installer/command`
 - `GET /api/installer/install.ps1`
 - `GET /api/installer/agent.zip`
+- `POST /api/agents/registration-codes` (administrator; returns a one-time registration code)
+- `POST /api/agents/heartbeat` (device bearer token)
+- `POST /api/agent/telemetry` (device bearer token; `/api/agents/telemetry` remains as a compatibility alias)
+- `GET /api/agent/download/powershell` (administrator; generated secret-free PowerShell agent)
+- `POST /api/agents/{computer_id}/regenerate-token` (administrator)
 
 Agent endpoints require `X-Agent-Api-Key`. Administrator endpoints require a Supabase bearer token from the React app.
+
+### PowerShell Windows agent
+
+Create a one-time code from the authenticated dashboard session by calling `POST /api/agents/registration-codes`, then run this on the target PC in an elevated PowerShell window:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\pc-monitoring-agent.ps1 -ApiBaseUrl https://YOUR_API_DOMAIN -RegistrationCode YOUR_CODE -InstallAsStartupTask
+```
+
+The script performs DNS, TCP 443, and API health checks; registers the computer; stores the device ID and device token in a DPAPI-protected `C:\ProgramData\PCMonitoringAgent\agent-config.json`; installs the `PC Monitoring Agent` scheduled task; and sends telemetry every 10 seconds. Override the interval with `-IntervalSeconds 60`. Verify the task with `Get-ScheduledTask -TaskName 'PC Monitoring Agent'` and telemetry data with `GET /api/computers` or the Computers page.
+
+To remove it, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\pc-monitoring-agent.ps1 -ApiBaseUrl https://YOUR_API_DOMAIN -Uninstall` as the same Windows user.
 
 ## Manual Configuration Notes
 

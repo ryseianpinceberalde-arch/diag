@@ -9,7 +9,11 @@ requests_by_key: dict[str, deque[float]] = defaultdict(deque)
 
 
 async def agent_rate_limit(request: Request, call_next):
-    if request.url.path in {"/api/agents/register", "/api/readings", "/api/events"}:
+    if request.url.path in {
+        "/api/agents/register", "/api/agents/heartbeat", "/api/agents/telemetry",
+        "/api/agent/register", "/api/agent/heartbeat", "/api/agent/telemetry",
+        "/api/readings", "/api/events",
+    }:
         key = request.headers.get("x-agent-api-key") or request.client.host if request.client else "unknown"
         now = monotonic()
         bucket = requests_by_key[key]

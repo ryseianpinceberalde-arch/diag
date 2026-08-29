@@ -140,6 +140,10 @@ export function ComputerDetailsPage() {
     latency: reading.network_latency,
     loss: reading.packet_loss
   }));
+  const inventory = detail.computer.agent_inventory ?? {};
+  const system = inventory.system ?? {};
+  const cpu = inventory.cpu ?? {};
+  const battery = inventory.battery ?? {};
 
   return (
     <div className="page">
@@ -164,6 +168,17 @@ export function ComputerDetailsPage() {
             <dt>IP address</dt><dd>{detail.computer.ip_address ?? "-"}</dd>
             <dt>Status</dt><dd><StatusBadge value={detail.computer.status} /></dd>
             <dt>Last seen</dt><dd>{detail.computer.last_seen ? new Date(detail.computer.last_seen).toLocaleString() : "-"}</dd>
+          </dl>
+        </section>
+        <section className="panel">
+          <h2>Windows agent inventory</h2>
+          <dl>
+            <dt>Windows build</dt><dd>{String(system.windows_build ?? "-")}</dd>
+            <dt>Architecture</dt><dd>{String(system.architecture ?? "-")}</dd>
+            <dt>Serial number</dt><dd>{String(system.serial_number ?? "-")}</dd>
+            <dt>CPU model</dt><dd>{String(cpu.model ?? "-")}</dd>
+            <dt>Physical / logical cores</dt><dd>{String(cpu.physical_cores ?? "-")} / {String(cpu.logical_processors ?? "-")}</dd>
+            <dt>Battery</dt><dd>{battery.percentage == null ? "Unavailable" : `${battery.percentage}%`}</dd>
           </dl>
         </section>
         <section className="panel">

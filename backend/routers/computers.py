@@ -7,8 +7,9 @@ from dependencies import admin_client, require_admin, require_role
 from services.prediction import analyze_computer
 from services.health import evaluate_computer_health
 from services.settings import load_thresholds
+from services.status import effective_status
 
-router = APIRouter(prefix="/computers", tags=["computers"], dependencies=[Depends(require_admin)])
+router = APIRouter(tags=["computers"], dependencies=[Depends(require_admin)])
 
 COMMAND_ACTIONS = {
     "system_info",
@@ -44,7 +45,7 @@ def list_computers(
         latest = client.table("diagnostic_readings").select("*").eq("computer_id", item["id"]).order("recorded_at", desc=True).limit(1).execute().data
         prediction = client.table("predictions").select("*").eq("computer_id", item["id"]).order("created_at", desc=True).limit(1).execute().data
         health = evaluate_computer_health(item, latest[0] if latest else None, thresholds)
-        item["status"] = health["status"]
+        item["status"] = effective_status(item, offline_after_seconds=thresholds.offline_after_seconds)
         item["latest_reading"] = latest[0] if latest else None
         item["latest_prediction"] = prediction[0] if prediction else None
         item["health_level"] = health["status"]
@@ -60,7 +61,7 @@ def get_computer(computer_id: str, client: Client = Depends(admin_client)) -> di
     alerts = client.table("alerts").select("*").eq("computer_id", computer_id).order("created_at", desc=True).limit(50).execute().data or []
     prediction = client.table("predictions").select("*").eq("computer_id", computer_id).order("created_at", desc=True).limit(1).execute().data
     health = evaluate_computer_health(computer, latest[0] if latest else None, thresholds)
-    computer["status"] = health["status"]
+    computer["status"] = effective_status(computer, offline_after_seconds=thresholds.offline_after_seconds)
     latest_prediction = prediction[0] if prediction else None
     computer["health_level"] = health["status"]
     computer["health_issues"] = health["issues"]
@@ -98,6 +99,39 @@ def get_history(
     readings = query.execute().data or []
     events = client.table("system_events").select("*").eq("computer_id", computer_id).order("occurred_at", desc=True).limit(100).execute().data or []
     return {"readings": readings, "events": events}
+
+
+@router.get("/{computer_id}/metrics")
+def get_metrics(computer_id: str, client: Client = Depends(admin_client)) -> dict:
+    get_computer(computer_id, client)
+    rows = client.table("diagnostic_readings").select("*").eq("computer_id", computer_id).order("recorded_at", desc=True).limit(200).execute().data or []
+    return {"items": rows}
+
+
+@router.get("/{computer_id}/hardware")
+def get_hardware(computer_id: str, client: Client = Depends(admin_client)) -> dict:
+    computer = get_computer(computer_id, client)["computer"]
+    inventory = computer.get("agent_inventory") or {}
+    return {"system": inventory.get("system", {}), "cpu": inventory.get("cpu", {}), "memory": inventory.get("memory", {}), "storage": inventory.get("storage", []), "gpu": inventory.get("gpu", []), "battery": inventory.get("battery")}
+
+
+@router.get("/{computer_id}/processes")
+def get_processes(computer_id: str, client: Client = Depends(admin_client)) -> dict:
+    computer = get_computer(computer_id, client)["computer"]
+    return {"items": (computer.get("agent_inventory") or {}).get("processes", [])}
+
+
+@router.get("/{computer_id}/network")
+def get_network(computer_id: str, client: Client = Depends(admin_client)) -> dict:
+    computer = get_computer(computer_id, client)["computer"]
+    return {"items": (computer.get("agent_inventory") or {}).get("network", [])}
+
+
+@router.get("/{computer_id}/alerts")
+def get_computer_alerts(computer_id: str, client: Client = Depends(admin_client)) -> dict:
+    get_computer(computer_id, client)
+    rows = client.table("alerts").select("*").eq("computer_id", computer_id).order("created_at", desc=True).limit(100).execute().data or []
+    return {"items": rows}
 
 
 @router.get("/{computer_id}/predictions")
