@@ -31,14 +31,16 @@ def create_install_token(settings: Settings) -> str:
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(hours=INSTALL_TOKEN_EXPIRY_HOURS)).timestamp()),
         },
-        settings.agent_api_key,
+        settings.supabase_service_role_key,
         algorithm=INSTALL_TOKEN_ALGORITHM,
     )
 
 
 def validate_install_token(token: str, settings: Settings) -> None:
     try:
-        payload = jwt.decode(token, settings.agent_api_key, algorithms=[INSTALL_TOKEN_ALGORITHM])
+        # Keep installer-link signing separate from the agent credential. This
+        # also lets a deploy revoke links signed with the previous key.
+        payload = jwt.decode(token, settings.supabase_service_role_key, algorithms=[INSTALL_TOKEN_ALGORITHM])
     except JWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid installer token") from exc
     if payload.get("purpose") != "pc-sentinel-agent-install":
