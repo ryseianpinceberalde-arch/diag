@@ -96,12 +96,8 @@ def register_agent(
     }
 
 
-def _ingest_telemetry(
-    payload: AgentTelemetry,
-    authorization: str | None = Header(default=None),
-    client: Client = Depends(admin_client),
-) -> dict:
-    computers = client.table("computers").select("id").eq("device_id", payload.device_id).limit(1).execute().data or []
+def _registered_computer(device_id: str, authorization: str | None, client: Client) -> dict:
+    computers = client.table("computers").select("id,status").eq("device_id", device_id).limit(1).execute().data or []
     if not computers:
         raise HTTPException(status_code=404, detail="Computer is not registered")
     if authorization and authorization.lower().startswith("bearer "):
@@ -109,7 +105,16 @@ def _ingest_telemetry(
         owned = client.table("computers").select("id").eq("id", computers[0]["id"]).eq("agent_token_hash", token_hash).limit(1).execute().data or []
         if not owned:
             raise HTTPException(status_code=403, detail="Credential does not belong to this device")
-    now = (payload.last_heartbeat or payload.timestamp or datetime.now(timezone.utc)).isoformat()
+    return computers[0]
+
+
+def _ingest_telemetry(
+    payload: AgentTelemetry,
+    authorization: str | None = Header(default=None),
+    client: Client = Depends(admin_client),
+) -> dict:
+    computer = _registered_computer(payload.device_id, authorization, client)
+    recorded_at = (payload.last_heartbeat or payload.timestamp or datetime.now(timezone.utc)).isoformat()
     system, cpu, memory = payload.system, payload.cpu, payload.memory
     connected_network = next(
         (
@@ -130,7 +135,7 @@ def _ingest_telemetry(
     )
     temperature = payload.temperature or {}
     row = {
-        "computer_id": computers[0]["id"], "cpu_usage": cpu.get("usage_percent"),
+        "computer_id": computer["id"], "cpu_usage": cpu.get("usage_percent"),
         "ram_usage": memory.get("usage_percent"),
         "disk_usage": max((item.get("usage_percent") for item in payload.storage if item.get("usage_percent") is not None), default=None),
         "disk_health": disk_health,
@@ -140,9 +145,10 @@ def _ingest_telemetry(
         "packet_loss": connected_network.get("packet_loss_percent"),
         "uptime_seconds": system.get("uptime_seconds"),
         "cpu_temperature": temperature.get("temperatureC") if temperature.get("available") else None,
-        "recorded_at": now,
+        "recorded_at": recorded_at,
     }
     inserted = client.table("diagnostic_readings").insert(row).execute().data
+    now = datetime.now(timezone.utc).isoformat()
     client.table("computers").update({
         "status": "online", "agent_status": "online", "last_seen": now, "last_heartbeat": now,
         "agent_version": payload.agent_version, "capabilities": payload.capabilities or ["cpu", "memory", "storage", "network"],
@@ -152,13 +158,22 @@ def _ingest_telemetry(
         "serial_number": system.get("serial_number"), "windows_build": system.get("windows_build"),
         "architecture": system.get("architecture"), "agent_inventory": payload.model_dump(mode="json"),
         **({"device_type": system.get("device_type")} if system.get("device_type") else {}),
-    }).eq("id", computers[0]["id"]).execute()
+    }).eq("id", computer["id"]).execute()
     return {"success": True, "last_heartbeat": now, "reading": inserted[0] if inserted else row}
 
 
 @router.post("/heartbeat", dependencies=[Depends(require_agent_credential)])
 def heartbeat(payload: AgentHeartbeat, authorization: str | None = Header(default=None), client: Client = Depends(admin_client)) -> dict:
-    return _ingest_telemetry(payload, authorization, client)
+    if not payload.heartbeat_only:
+        return _ingest_telemetry(payload, authorization, client)
+    computer = _registered_computer(payload.device_id, authorization, client)
+    now = datetime.now(timezone.utc).isoformat()
+    row = {"last_seen": now, "last_heartbeat": now, "agent_status": "online"}
+    # A heartbeat restores connectivity without clearing hardware warnings.
+    if computer.get("status") == "offline":
+        row["status"] = "online"
+    client.table("computers").update(row).eq("id", computer["id"]).execute()
+    return {"success": True, "last_heartbeat": now}
 
 
 @router.post("/telemetry", dependencies=[Depends(require_agent_credential)])

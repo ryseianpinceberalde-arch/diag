@@ -101,7 +101,7 @@ class AgentTelemetry(BaseModel):
 
 class AgentHeartbeat(AgentTelemetry):
     """Backward-compatible heartbeat payload; telemetry uses the same contract."""
-    pass
+    heartbeat_only: bool = False
 
 
 class Computer(AgentRegistration):

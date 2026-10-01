@@ -10,6 +10,7 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -49,7 +50,8 @@ def is_local_api_url(value: str) -> bool:
 API_BASE_URL = normalize_url(ARGS.api_base_url or os.getenv("API_BASE_URL") or DEFAULT_API_BASE_URL)
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 INTERVAL = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "60"))
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.2.1"
+HEARTBEAT_INTERVAL_SECONDS = 10
 QUEUE_PATH = Path(os.getenv("AGENT_QUEUE_PATH", str(AGENT_DIR / "agent_queue.sqlite3")))
 DEVICE_ID_PATH = Path(os.getenv("AGENT_DEVICE_ID_PATH", str(AGENT_DIR / "device-id.txt")))
 LHM_DLL_PATH = Path(os.getenv("LIBRE_HARDWARE_MONITOR_DLL", "..\\tools\\LibreHardwareMonitor\\LibreHardwareMonitorLib.dll"))
@@ -693,6 +695,15 @@ def request_stop(*_: Any) -> None:
     stop_requested = True
 
 
+def send_heartbeats(device_id: str, stopped: threading.Event) -> None:
+    # Sensor collection and queue uploads can take longer than the connection
+    # timeout. Send liveness separately without touching the SQLite queue.
+    while not stopped.wait(HEARTBEAT_INTERVAL_SECONDS):
+        if stop_requested:
+            return
+        post("agents/heartbeat", {"device_id": device_id, "heartbeat_only": True})
+
+
 def check_in_once() -> int:
     log_startup_context()
     if not AGENT_API_KEY:
@@ -727,21 +738,30 @@ def main() -> None:
     queue = Queue(QUEUE_PATH)
     metadata = computer_metadata()
     backoff = 1
-    while not stop_requested:
-        poll_agent_commands(metadata["device_id"])
-        if not post("agents/register", metadata):
-            queue.add("agents/register", metadata)
-        reading = collect_reading(metadata["device_id"])
-        if not post("readings", reading):
-            queue.add("readings", reading)
-            backoff = min(backoff * 2, 60)
-        else:
-            backoff = 1
-        for event in collect_events(metadata["device_id"]):
-            if not post("events", event):
-                queue.add("events", event)
-        queue.drain(post)
-        time.sleep(max(INTERVAL, backoff))
+    heartbeat_stopped = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=send_heartbeats, args=(metadata["device_id"], heartbeat_stopped), daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        while not stop_requested:
+            poll_agent_commands(metadata["device_id"])
+            if not post("agents/register", metadata):
+                queue.add("agents/register", metadata)
+            reading = collect_reading(metadata["device_id"])
+            if not post("readings", reading):
+                queue.add("readings", reading)
+                backoff = min(backoff * 2, 60)
+            else:
+                backoff = 1
+            for event in collect_events(metadata["device_id"]):
+                if not post("events", event):
+                    queue.add("events", event)
+            queue.drain(post)
+            time.sleep(max(INTERVAL, backoff))
+    finally:
+        heartbeat_stopped.set()
+        heartbeat_thread.join(timeout=15)
 
 
 if __name__ == "__main__":

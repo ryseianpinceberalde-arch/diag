@@ -22,10 +22,11 @@ def create_reading(payload: DiagnosticReadingIn, client: Client = Depends(admin_
     computer_id = find_computer_id(client, payload.device_id)
     row = payload.model_dump(exclude={"device_id"}, exclude_none=False, mode="json")
     row["computer_id"] = computer_id
-    seen_at = row["recorded_at"] or datetime.now(timezone.utc).isoformat()
-    row["recorded_at"] = seen_at
+    row["recorded_at"] = row["recorded_at"] or datetime.now(timezone.utc).isoformat()
     inserted = client.table("diagnostic_readings").insert(row).execute().data
-    client.table("computers").update({"status": "online", "last_seen": seen_at}).eq("id", computer_id).execute()
+    # Queued samples and client clock skew must not backdate connectivity.
+    seen_at = datetime.now(timezone.utc).isoformat()
+    client.table("computers").update({"status": "online", "last_seen": seen_at, "last_heartbeat": seen_at}).eq("id", computer_id).execute()
     computer = client.table("computers").select("*").eq("id", computer_id).single().execute().data
     try:
         health = upsert_health_alerts(client, computer, inserted[0] if inserted else row)

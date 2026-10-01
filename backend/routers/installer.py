@@ -18,7 +18,7 @@ router = APIRouter(prefix="/installer", tags=["installer"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_ROOT = PROJECT_ROOT / "agent"
 AGENT_FILES = ("agent.py", "requirements.txt", "start_with_temperature.ps1")
-AGENT_PACKAGE_VERSION = "2026-08-25-operations-v1"
+AGENT_PACKAGE_VERSION = "2026-10-01-heartbeat-v1"
 INSTALL_TOKEN_ALGORITHM = "HS256"
 INSTALL_TOKEN_EXPIRY_HOURS = 24
 
@@ -358,6 +358,11 @@ Write-Step "Computer registered successfully."
 
 Write-Step "[7/7] Starting agent"
 try {{
+  $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  if ($existingTask -and $existingTask.State -eq "Running") {{
+    Write-Step "Restarting existing agent with the updated package"
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
+  }}
   $action = New-ScheduledTaskAction -Execute $python -Argument "`"$agentPath`"" -WorkingDirectory $InstallDir
   $trigger = New-ScheduledTaskTrigger -AtLogOn
   $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
