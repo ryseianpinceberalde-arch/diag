@@ -316,7 +316,7 @@ export function ComputerDetailsPage() {
       {activeTab === "tickets" && <RepairTicketList tickets={operational.tickets} canCreate={detail.permissions.create_ticket} onCreate={() => setDialog("ticket")} />}
       {activeTab === "maintenance" && <MaintenanceLog records={operational.maintenance} canCreate={detail.permissions.log_maintenance} onCreate={() => setDialog("maintenance")} />}
 
-      <DeviceActionDialog mode={dialog} deviceName={detail.computer.display_name || detail.computer.computer_name} currentAgentVersion={detail.computer.agent_version} latestAgentVersion={latestAgentVersion} submitting={submitting} onClose={() => setDialog(null)} onCreateTicket={createTicket} onLogMaintenance={logMaintenance} onOpenAgentManagement={() => navigate("/agents")} />
+      <DeviceActionDialog mode={dialog} computerId={detail.computer.id} deviceName={detail.computer.display_name || detail.computer.computer_name} currentAgentVersion={detail.computer.agent_version} latestAgentVersion={latestAgentVersion} submitting={submitting} onClose={() => setDialog(null)} onCreateTicket={createTicket} onLogMaintenance={logMaintenance} onOpenAgentManagement={() => navigate("/agents")} />
     </div>
   );
 }

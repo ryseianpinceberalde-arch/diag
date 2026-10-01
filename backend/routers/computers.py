@@ -1,10 +1,11 @@
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
+from typing import Literal
 import hashlib
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from supabase import Client
 from dependencies import admin_client, require_admin, require_role
 from services.prediction import analyze_computer
@@ -54,6 +55,77 @@ class ComputerCreate(ComputerUpdate):
 
 class CommandCreate(BaseModel):
     action: str = Field(min_length=1, max_length=80)
+
+
+class RemoteSupportConfig(BaseModel):
+    enabled: bool = False
+    rustdesk_id: str = Field(default="", pattern=r"^(?:[0-9]{6,16})?$")
+
+    @field_validator("rustdesk_id", mode="before")
+    @classmethod
+    def normalize_id(cls, value):
+        return value.replace(" ", "").strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def require_id_when_enabled(self):
+        if self.enabled and not self.rustdesk_id:
+            raise ValueError("Enter this computer's numeric RustDesk ID before enabling remote support")
+        return self
+
+
+class RemoteSupportLaunch(BaseModel):
+    mode: Literal["desktop", "file_transfer"]
+
+
+def _remote_support_config(computer_id: str, client: Client) -> RemoteSupportConfig:
+    computers = client.table("computers").select("id").eq("id", computer_id).limit(1).execute().data or []
+    if not computers:
+        raise HTTPException(status_code=404, detail="Computer not found")
+    rows = client.table("app_settings").select("value").eq("key", f"remote_support:{computer_id}").limit(1).execute().data or []
+    return RemoteSupportConfig.model_validate(rows[0]["value"] if rows else {})
+
+
+@router.get("/{computer_id}/remote-support", dependencies=[Depends(require_role("administrator"))])
+def get_remote_support(computer_id: str, client: Client = Depends(admin_client)) -> dict:
+    return _remote_support_config(computer_id, client).model_dump()
+
+
+@router.put("/{computer_id}/remote-support")
+def configure_remote_support(
+    computer_id: str, payload: RemoteSupportConfig,
+    user: dict = Depends(require_role("administrator")), client: Client = Depends(admin_client),
+) -> dict:
+    _remote_support_config(computer_id, client)
+    value = payload.model_dump()
+    client.table("app_settings").upsert({
+        "key": f"remote_support:{computer_id}", "value": value,
+        "updated_by": user["id"], "updated_at": datetime.now(timezone.utc).isoformat(),
+    }, on_conflict="key").execute()
+    client.table("audit_logs").insert({
+        "actor_id": user["id"], "action": "remote_support.configured",
+        "target_type": "computer", "target_id": computer_id, "metadata": value,
+    }).execute()
+    return value
+
+
+@router.post("/{computer_id}/remote-support/launch")
+def prepare_remote_support(
+    computer_id: str, payload: RemoteSupportLaunch,
+    user: dict = Depends(require_role("administrator")), client: Client = Depends(admin_client),
+) -> dict:
+    config = _remote_support_config(computer_id, client)
+    if not config.enabled:
+        raise HTTPException(status_code=409, detail="Remote support is disabled for this computer")
+    # RustDesk's native URI handler accepts connect and file-transfer commands.
+    # Credentials and remote permissions remain in RustDesk, never in the URL.
+    command = "connect" if payload.mode == "desktop" else "file-transfer"
+    uri = f"rustdesk://{command}/{config.rustdesk_id}"
+    client.table("audit_logs").insert({
+        "actor_id": user["id"], "action": "remote_support.launch_requested",
+        "target_type": "computer", "target_id": computer_id,
+        "metadata": {"provider": "rustdesk", "mode": payload.mode, "rustdesk_id": config.rustdesk_id},
+    }).execute()
+    return {"uri": uri, "mode": payload.mode, "rustdesk_id": config.rustdesk_id}
 
 
 @router.get("")

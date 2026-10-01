@@ -181,6 +181,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBa
 
 Only a logged-in dashboard admin can generate the temporary installer token. The installer downloads `agent.zip`, installs Python packages, writes the agent `.env`, creates a Windows startup task named `PC Sentinel Agent`, and starts the agent.
 
+Python agent 0.2.1 sends a lightweight heartbeat every 10 seconds independently of the diagnostic collection interval. Deploy the updated backend first, then run a freshly generated installer command on each existing PC to update its agent. The installer restarts its existing scheduled task and preserves its device ID. For installations using the user startup launcher, restart Windows after updating to replace any older running agent. Install each PC using the command; copying an installed agent folder also copies its saved device ID.
+
+## Remote Desktop and File Access with RustDesk
+
+1. Install the [RustDesk client](https://rustdesk.com/docs/en/client/) on the administrator's PC and each remote PC. Use compatible RustDesk server settings on both ends.
+2. On the remote PC, open RustDesk and note **Your ID**. Keep RustDesk running.
+3. Sign in to PC Sentinel as an administrator. Open that computer's details, then **Remote Support**.
+4. Enter that PC's numeric RustDesk ID, select **Enabled**, and click **Save settings**. Repeat with the other PC's own ID.
+5. Choose **Desktop control** or **File transfer**, then click the **Open RustDesk** link. Accept the browser's prompt to open the installed application. If the browser cannot open it, enter the displayed ID in RustDesk manually.
+6. Approve the session on the remote PC in RustDesk and enable the required keyboard/mouse or file-transfer permissions. Edit files through the remote desktop, or download/edit/upload them through file transfer.
+
+Remote support keeps the existing administrator-only permission. Configuration is stored per computer in the existing `app_settings` table; no migration or new service is required. Configuration changes and requests to open RustDesk are recorded in `audit_logs`. These events record launch requests, not successful sessions or file operations. RustDesk handles session authentication, permissions, and connectivity; PC Sentinel stores no RustDesk passwords. Only numeric IDs (6–16 digits, with optional spaces) are supported by this integration.
+
+Disabling remote support in the dashboard disables its launch shortcut. End active sessions or revoke remote access in RustDesk itself. RustDesk connectivity is independent of PC Sentinel's monitoring status.
+
+The native URL formats follow the [RustDesk URI handler](https://github.com/rustdesk/rustdesk/blob/master/flutter/lib/common.dart): `rustdesk://connect/ID` and `rustdesk://file-transfer/ID`.
+
 ## Run Tests and Checks
 
 Backend:
@@ -209,6 +226,9 @@ Set-Location ..
 - `GET /api/dashboard/summary`
 - `GET /api/computers`
 - `GET /api/computers/{computer_id}`
+- `GET /api/computers/{computer_id}/remote-support` (administrator only)
+- `PUT /api/computers/{computer_id}/remote-support` (administrator only; `enabled`, `rustdesk_id`)
+- `POST /api/computers/{computer_id}/remote-support/launch` (administrator only; mode `desktop` or `file_transfer`)
 - `DELETE /api/computers/{computer_id}` (administrator only)
 - `GET /api/computers/{computer_id}/history`
 - `GET /api/computers/{computer_id}/predictions`

@@ -1,11 +1,13 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Headphones, UploadCloud, Wrench, X } from "lucide-react";
+import { RemoteSupportPanel } from "./RemoteSupportPanel";
 
 export type DeviceDialogMode = "ticket" | "maintenance" | "remote" | "agent" | null;
 
 export function DeviceActionDialog({
   mode,
   deviceName,
+  computerId,
   currentAgentVersion,
   latestAgentVersion,
   submitting,
@@ -16,6 +18,7 @@ export function DeviceActionDialog({
 }: {
   mode: DeviceDialogMode;
   deviceName: string;
+  computerId: string;
   currentAgentVersion: string | null;
   latestAgentVersion: string | null;
   submitting: boolean;
@@ -77,7 +80,7 @@ export function DeviceActionDialog({
           <footer className="modal-footer"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button type="submit" disabled={submitting}>{submitting ? "Saving..." : "Save Maintenance Log"}</button></footer>
         </form>}
 
-        {mode === "remote" && <div className="integration-message"><Headphones size={28} /><h3>Remote support integration not configured.</h3><p>No connection has been opened. Remote support requires an authorized user, an authorized device, and an explicit configured support provider.</p><button onClick={onClose}>Close</button></div>}
+        {mode === "remote" && <RemoteSupportPanel key={computerId} computerId={computerId} />}
 
         {mode === "agent" && <div className="integration-message"><UploadCloud size={28} /><h3>{currentAgentVersion === latestAgentVersion ? "Agent is up to date" : "Controlled update required"}</h3><p>Installed: {currentAgentVersion || "Not reported"} • Latest: {latestAgentVersion || "Not reported"}</p><p>PC Sentinel does not execute arbitrary remote PowerShell. Use the authenticated Agent Management installer workflow to update this device.</p><div className="header-actions"><button className="secondary" onClick={onClose}>Cancel</button><button onClick={onOpenAgentManagement}>Open Agent Management</button></div></div>}
       </section>
