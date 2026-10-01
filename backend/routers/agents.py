@@ -70,7 +70,9 @@ def register_agent(
             raise HTTPException(status_code=401, detail="Registration code is assigned to another device")
         code_row = codes[0]
     token = secrets.token_urlsafe(32)
-    row = payload.model_dump(mode="json")
+    # Let database defaults fill missing fields on insert and retain existing
+    # asset metadata when an agent registers again without those fields.
+    row = payload.model_dump(mode="json", exclude_none=True)
     row.pop("registration_code", None)
     row["status"] = "online"
     row["agent_status"] = "online"
