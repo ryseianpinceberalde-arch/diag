@@ -18,7 +18,7 @@ router = APIRouter(prefix="/installer", tags=["installer"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_ROOT = PROJECT_ROOT / "agent"
 AGENT_FILES = ("agent.py", "requirements.txt", "start_with_temperature.ps1")
-AGENT_PACKAGE_VERSION = "2026-10-01-heartbeat-v1"
+AGENT_PACKAGE_VERSION = "2026-10-01-heartbeat-v2-user-run"
 INSTALL_TOKEN_ALGORITHM = "HS256"
 INSTALL_TOKEN_EXPIRY_HOURS = 24
 
@@ -371,17 +371,17 @@ try {{
   Write-Step "Starting agent"
   Start-ScheduledTask -TaskName $taskName
 }} catch {{
-  Write-Step "Startup task was blocked by Windows permissions; creating user startup launcher instead"
-  $startupDir = [Environment]::GetFolderPath("Startup")
-  $cmdPath = Join-Path $startupDir "pc-sentinel-agent.cmd"
-  @"
-@echo off
-cd /d "$InstallDir"
-start "" /min "$python" "$agentPath"
-"@ | Set-Content -Encoding ASCII -Path $cmdPath
-
-  Write-Step "Starting agent without scheduled task"
-  Start-Process -FilePath $python -ArgumentList "`"$agentPath`"" -WorkingDirectory $InstallDir -WindowStyle Hidden
+  Write-Step "Scheduled task was blocked; registering the agent for this Windows user"
+  try {{
+    $runKey = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+    New-Item -Path $runKey -Force | Out-Null
+    $runCommand = "`"$python`" `"$agentPath`""
+    New-ItemProperty -LiteralPath $runKey -Name "PC Sentinel Agent" -Value $runCommand -PropertyType String -Force | Out-Null
+    Write-Step "Per-user startup entry created"
+    Start-Process -FilePath $python -ArgumentList "`"$agentPath`"" -WorkingDirectory $InstallDir -WindowStyle Hidden
+  }} catch {{
+    throw "[PC Sentinel] Could not create the per-user startup entry. Run PowerShell as Administrator or check Windows security policy. Details: $($_.Exception.Message)"
+  }}
 }}
 Write-Host "========================================="
 Write-Host "PC SENTINEL INSTALLED SUCCESSFULLY"

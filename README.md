@@ -181,7 +181,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBa
 
 Only a logged-in dashboard admin can generate the temporary installer token. The installer downloads `agent.zip`, installs Python packages, writes the agent `.env`, creates a Windows startup task named `PC Sentinel Agent`, and starts the agent.
 
-Python agent 0.2.1 sends a lightweight heartbeat every 10 seconds independently of the diagnostic collection interval. Deploy the updated backend first, then run a freshly generated installer command on each existing PC to update its agent. The installer restarts its existing scheduled task and preserves its device ID. For installations using the user startup launcher, restart Windows after updating to replace any older running agent. Install each PC using the command; copying an installed agent folder also copies its saved device ID.
+Python agent 0.2.1 sends a lightweight heartbeat every 10 seconds independently of the diagnostic collection interval. Deploy the updated backend first, then run a freshly generated installer command on each existing PC to update its agent. The installer restarts its existing scheduled task and preserves its device ID. If Windows blocks task creation, the installer starts the agent now and adds it to the current user's Run registry key so it starts at sign-in. Install each PC using the command; copying an installed agent folder also copies its saved device ID.
 
 ## Remote Desktop and File Access with RustDesk
 
